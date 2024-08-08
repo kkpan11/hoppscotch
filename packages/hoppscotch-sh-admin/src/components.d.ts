@@ -17,8 +17,11 @@ declare module '@vue/runtime-core' {
     HoppButtonPrimary: typeof import('@hoppscotch/ui')['HoppButtonPrimary'];
     HoppButtonSecondary: typeof import('@hoppscotch/ui')['HoppButtonSecondary'];
     HoppSmartAnchor: typeof import('@hoppscotch/ui')['HoppSmartAnchor'];
+    HoppSmartAutoComplete: typeof import('@hoppscotch/ui')['HoppSmartAutoComplete'];
+    HoppSmartCheckbox: typeof import('@hoppscotch/ui')['HoppSmartCheckbox'];
     HoppSmartConfirmModal: typeof import('@hoppscotch/ui')['HoppSmartConfirmModal'];
     HoppSmartInput: typeof import('@hoppscotch/ui')['HoppSmartInput'];
+    HoppSmartIntersection: typeof import('@hoppscotch/ui')['HoppSmartIntersection'];
     HoppSmartItem: typeof import('@hoppscotch/ui')['HoppSmartItem'];
     HoppSmartLink: typeof import('@hoppscotch/ui')['HoppSmartLink'];
     HoppSmartModal: typeof import('@hoppscotch/ui')['HoppSmartModal'];
@@ -27,9 +30,16 @@ declare module '@vue/runtime-core' {
     HoppSmartSelectWrapper: typeof import('@hoppscotch/ui')['HoppSmartSelectWrapper'];
     HoppSmartSpinner: typeof import('@hoppscotch/ui')['HoppSmartSpinner'];
     HoppSmartTab: typeof import('@hoppscotch/ui')['HoppSmartTab'];
+    HoppSmartTable: typeof import('@hoppscotch/ui')['HoppSmartTable'];
     HoppSmartTabs: typeof import('@hoppscotch/ui')['HoppSmartTabs'];
     HoppSmartToggle: typeof import('@hoppscotch/ui')['HoppSmartToggle'];
+    IconLucideArrowLeft: typeof import('~icons/lucide/arrow-left')['default'];
+    IconLucideCheck: typeof import('~icons/lucide/check')['default'];
+    IconLucideChevronDown: typeof import('~icons/lucide/chevron-down')['default'];
+    IconLucideHelpCircle: typeof import('~icons/lucide/help-circle')['default'];
     IconLucideInbox: typeof import('~icons/lucide/inbox')['default'];
+    IconLucideSearch: typeof import('~icons/lucide/search')['default'];
+    IconLucideUser: typeof import('~icons/lucide/user')['default'];
     SettingsAuthProvider: typeof import('./components/settings/AuthProvider.vue')['default'];
     SettingsConfigurations: typeof import('./components/settings/Configurations.vue')['default'];
     SettingsDataSharing: typeof import('./components/settings/DataSharing.vue')['default'];
@@ -43,9 +53,15 @@ declare module '@vue/runtime-core' {
     TeamsMembers: typeof import('./components/teams/Members.vue')['default'];
     TeamsPendingInvites: typeof import('./components/teams/PendingInvites.vue')['default'];
     Tippy: typeof import('vue-tippy')['Tippy'];
+    Tokens: typeof import('./components/tokens/index.vue')['default'];
+    TokensGenerateModal: typeof import('./components/tokens/GenerateModal.vue')['default'];
+    TokensList: typeof import('./components/tokens/List.vue')['default'];
+    TokensOverview: typeof import('./components/tokens/Overview.vue')['default'];
+    TokensToken: typeof import('./components/tokens/Token.vue')['default'];
     UiAutoResetIcon: typeof import('./components/ui/AutoResetIcon.vue')['default'];
     UsersDetails: typeof import('./components/users/Details.vue')['default'];
     UsersInviteModal: typeof import('./components/users/InviteModal.vue')['default'];
     UsersSharedRequests: typeof import('./components/users/SharedRequests.vue')['default'];
+    UsersSuccessInviteModal: typeof import('./components/users/SuccessInviteModal.vue')['default'];
   }
 }

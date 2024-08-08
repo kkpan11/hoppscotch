@@ -48,8 +48,13 @@ const parseInsomniaDoc = (content: string) =>
 const replacePathVarTemplating = (expression: string) =>
   expression.replaceAll(/:([^/]+)/g, "<<$1>>")
 
-const replaceVarTemplating = (expression: string) =>
-  pipe(expression, replacePathVarTemplating, replaceInsomniaTemplating)
+const replaceVarTemplating = (expression: string, pathVar = false) => {
+  return pipe(
+    expression,
+    pathVar ? replacePathVarTemplating : (x) => x,
+    replaceInsomniaTemplating
+  )
+}
 
 const getFoldersIn = (
   folder: InsomniaFolderResource | null,
@@ -121,6 +126,7 @@ const getHoppReqAuth = (req: InsomniaRequestResource): HoppRESTAuth => {
         isPKCE: false,
         tokenEndpoint: replaceVarTemplating(auth.accessTokenUrl ?? ""),
       },
+      addTo: "HEADERS",
     }
   else if (auth.type === "bearer")
     return {
@@ -208,7 +214,7 @@ const getHoppRequest = (req: InsomniaRequestResource): HoppRESTRequest =>
   makeRESTRequest({
     name: req.name ?? "Untitled Request",
     method: req.method?.toUpperCase() ?? "GET",
-    endpoint: replaceVarTemplating(req.url ?? ""),
+    endpoint: replaceVarTemplating(req.url ?? "", true),
     auth: getHoppReqAuth(req),
     body: getHoppReqBody(req),
     headers: getHoppReqHeaders(req),

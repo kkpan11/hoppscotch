@@ -54,6 +54,7 @@
         @add-request="addRequest($event)"
         @add-folder="addFolder($event)"
         @edit-folder="editFolder($event)"
+        @duplicate-collection="duplicateCollection($event)"
         @edit-request="editRequest($event)"
         @duplicate-request="duplicateRequest($event)"
         @select-collection="$emit('use-collection', collection)"
@@ -115,6 +116,7 @@
     <CollectionsGraphqlAddRequest
       :show="showModalAddRequest"
       :folder-path="editingFolderPath"
+      :request-context="requestContext"
       @add-request="onAddRequest($event)"
       @hide-modal="displayModalAddRequest(false)"
     />
@@ -138,6 +140,7 @@
       :folder-path="editingFolderPath"
       :request="editingRequest"
       :request-index="editingRequestIndex"
+      :request-context="editingRequest"
       :editing-request-name="editingRequest ? editingRequest.name : ''"
       @hide-modal="displayModalEditRequest(false)"
     />
@@ -167,6 +170,7 @@ import {
   editGraphqlCollection,
   editGraphqlFolder,
   moveGraphqlRequest,
+  duplicateGraphQLCollection,
 } from "~/newstore/collections"
 import IconPlus from "~icons/lucide/plus"
 import IconHelpCircle from "~icons/lucide/help-circle"
@@ -327,6 +331,10 @@ const filteredCollections = computed(() => {
   return filteredCollections
 })
 
+const requestContext = computed(() => {
+  return tabs.currentActiveTab.value.document.request
+})
+
 const displayModalAdd = (shouldDisplay: boolean) => {
   showModalAdd.value = shouldDisplay
 }
@@ -379,6 +387,14 @@ const editCollection = (
   editingCollectionIndex.value = collectionIndex
   displayModalEdit(true)
 }
+
+const duplicateCollection = ({
+  path,
+  collectionSyncID,
+}: {
+  path: string
+  collectionSyncID?: string
+}) => duplicateGraphQLCollection(path, collectionSyncID)
 
 const onAddRequest = ({
   name,

@@ -47,7 +47,10 @@ export const preRequestScriptRunner = (
     ),
     TE.map(
       ({ selected, global }) =>
-        <Environment>{ name: "Env", variables: [...selected, ...global] }
+        <Environment>{
+          name: "Env",
+          variables: [...(selected ?? []), ...(global ?? [])],
+        }
     ),
     TE.chainEitherKW((env) => getEffectiveRESTRequest(request, env)),
     TE.mapLeft((reason) =>
@@ -159,12 +162,18 @@ export function getEffectiveRESTRequest(
   }
   const effectiveFinalBody = _effectiveFinalBody.right;
 
-  if (request.body.contentType)
+  if (
+    request.body.contentType &&
+    !effectiveFinalHeaders.some(
+      ({ key }) => key.toLowerCase() === "content-type"
+    )
+  ) {
     effectiveFinalHeaders.push({
       active: true,
-      key: "content-type",
+      key: "Content-Type",
       value: request.body.contentType,
     });
+  }
 
   // Parsing final-endpoint with applied ENVs.
   const _effectiveFinalURL = parseTemplateStringE(
