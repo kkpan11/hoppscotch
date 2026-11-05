@@ -85,6 +85,12 @@
     "name": "Magyar"
   },
   {
+    "code": "hy",
+    "file": "hy.json",
+    "iso": "hy-AM",
+    "name": "Հայերեն"
+  },
+  {
     "code": "id",
     "file": "id.json",
     "iso": "id",
@@ -107,6 +113,12 @@
     "file": "ko.json",
     "iso": "ko-KO",
     "name": "한국어"
+  },
+  {
+    "code": "mn",
+    "file": "mn.json",
+    "iso": "mn-MN",
+    "name": "Монгол"
   },
   {
     "code": "nl",
@@ -161,6 +173,12 @@
     "file": "sv.json",
     "iso": "sv-SV",
     "name": "Svenska"
+  },
+  {
+    "code": "th",
+    "file": "th.json",
+    "iso": "th-TH",
+    "name": "ไทย"
   },
   {
     "code": "tr",

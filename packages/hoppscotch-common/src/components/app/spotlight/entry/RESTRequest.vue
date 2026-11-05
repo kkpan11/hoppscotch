@@ -7,11 +7,17 @@
       <icon-lucide-chevron-right class="flex flex-shrink-0" />
     </template>
     <span
-      v-if="request"
+      v-if="request && 'method' in request"
       class="flex flex-shrink-0 truncate rounded-md border border-dividerDark px-1 text-tiny font-semibold"
-      :style="{ color: getMethodLabelColorClassOf(request) }"
+      :style="{ color: getMethodLabelColorClassOf(request.method) }"
     >
       {{ request.method.toUpperCase() }}
+    </span>
+    <span
+      v-else-if="request && isGQLRequest(request)"
+      class="flex flex-shrink-0 items-center rounded-md border border-dividerDark px-1"
+    >
+      <IconGraphql class="svg-icons h-3.5 w-3.5 text-accent" />
     </span>
     <span v-if="request" class="block">
       {{ request.name }}
@@ -22,8 +28,10 @@
 <script setup lang="ts">
 import { HoppCollection } from "@hoppscotch/data"
 import { computed } from "vue"
+import IconGraphql from "~icons/hopp/graphql"
 import { restCollectionStore } from "~/newstore/collections"
 import { getMethodLabelColorClassOf } from "~/helpers/rest/labelColoring"
+import { isGQLRequest } from "~/helpers/request-type"
 
 const props = defineProps<{
   folderPath: string
@@ -64,7 +72,7 @@ const request = computed(() => {
     return pathFolders.value[pathFolders.value.length - 1].requests[
       requestIndex
     ]
-  } catch (e) {
+  } catch (_e) {
     return null
   }
 })

@@ -33,7 +33,7 @@
             dropItemID = ''
           }
         "
-        @contextmenu.prevent="options?.tippy.show()"
+        @contextmenu.prevent="options?.tippy?.show()"
       >
         <div
           class="flex min-w-0 flex-1 items-center justify-center"
@@ -56,22 +56,67 @@
             <span class="truncate" :class="{ 'text-accent': isSelected }">
               {{ collectionName }}
             </span>
+            <!-- Mock Server Status Indicator -->
+            <span
+              v-if="mockServerStatus.exists"
+              v-tippy="{ theme: 'tooltip' }"
+              :title="
+                mockServerStatus.isActive
+                  ? t('mock_server.active')
+                  : t('mock_server.inactive')
+              "
+              class="ml-2 flex items-center"
+            >
+              <component
+                :is="IconServer"
+                class="svg-icons"
+                :class="{
+                  'text-green-500': mockServerStatus.isActive,
+                  'text-secondaryLight': !mockServerStatus.isActive,
+                }"
+              />
+            </span>
+            <!-- Published Doc Status Indicator -->
+            <span
+              v-if="publishedDocStatus"
+              v-tippy="{ theme: 'tooltip' }"
+              :title="t('documentation.publish.published')"
+              class="ml-2 flex items-center"
+            >
+              <component :is="IconGlobe" class="svg-icons text-green-500" />
+            </span>
           </span>
         </div>
-        <div v-if="!hasNoTeamAccess" class="flex">
+
+        <div
+          v-if="isCollectionLoading && !isOpen"
+          class="flex items-center px-2"
+        >
+          <HoppSmartSpinner />
+        </div>
+        <div v-else class="flex">
           <HoppButtonSecondary
+            v-if="!hasNoTeamAccess"
             v-tippy="{ theme: 'tooltip' }"
             :icon="IconFilePlus"
-            :title="t('request.new')"
+            :title="t('request.add')"
             class="hidden group-hover:inline-flex"
             @click="emit('add-request')"
           />
           <HoppButtonSecondary
+            v-if="!hasNoTeamAccess"
             v-tippy="{ theme: 'tooltip' }"
             :icon="IconFolderPlus"
             :title="t('folder.new')"
             class="hidden group-hover:inline-flex"
             @click="emit('add-folder')"
+          />
+          <HoppButtonSecondary
+            v-tippy="{ theme: 'tooltip' }"
+            :icon="IconPlaySquare"
+            :title="t('collection_runner.run_collection')"
+            class="hidden group-hover:inline-flex"
+            @click="emit('run-collection', props.id)"
           />
           <span>
             <tippy
@@ -92,14 +137,23 @@
                   class="flex flex-col focus:outline-none"
                   tabindex="0"
                   @keyup.r="requestAction?.$el.click()"
+                  @keyup.g="gqlRequestAction?.$el.click()"
                   @keyup.n="folderAction?.$el.click()"
                   @keyup.e="edit?.$el.click()"
+                  @keyup.d="duplicateAction?.$el.click()"
                   @keyup.delete="deleteAction?.$el.click()"
                   @keyup.x="exportAction?.$el.click()"
                   @keyup.p="propertiesAction?.$el.click()"
+                  @keyup.t="runCollectionAction?.$el.click()"
+                  @keyup.s="sortAction?.$el.click()"
+                  @keyup.m="
+                    isMockServerVisible && mockServerAction?.$el.click()
+                  "
+                  @keyup.i="documentationAction?.$el.click()"
                   @keyup.escape="hide()"
                 >
                   <HoppSmartItem
+                    v-if="!hasNoTeamAccess"
                     ref="requestAction"
                     :icon="IconFilePlus"
                     :label="t('request.new')"
@@ -112,6 +166,20 @@
                     "
                   />
                   <HoppSmartItem
+                    v-if="!hasNoTeamAccess && isGqlWorkspaceEnabled"
+                    ref="gqlRequestAction"
+                    :icon="IconGraphql"
+                    :label="t('request.new_gql')"
+                    :shortcut="['G']"
+                    @click="
+                      () => {
+                        emit('add-gql-request')
+                        hide()
+                      }
+                    "
+                  />
+                  <HoppSmartItem
+                    v-if="!hasNoTeamAccess"
                     ref="folderAction"
                     :icon="IconFolderPlus"
                     :label="t('folder.new')"
@@ -124,6 +192,49 @@
                     "
                   />
                   <HoppSmartItem
+                    ref="runCollectionAction"
+                    :icon="IconPlaySquare"
+                    :label="t('collection_runner.run_collection')"
+                    :shortcut="['T']"
+                    @click="
+                      () => {
+                        emit('run-collection', props.id)
+                        hide()
+                      }
+                    "
+                  />
+                  <HoppSmartItem
+                    v-if="isDocumentationVisible"
+                    ref="documentationAction"
+                    :icon="IconBook"
+                    :label="t('documentation.title')"
+                    :shortcut="['I']"
+                    @click="
+                      () => {
+                        handleDocumentationAction()
+                        hide()
+                      }
+                    "
+                  />
+                  <HoppSmartItem
+                    v-if="
+                      !hasNoTeamAccess &&
+                      isRootCollection &&
+                      isMockServerVisible
+                    "
+                    ref="mockServerAction"
+                    :icon="IconServer"
+                    :label="t('mock_server.create_mock_server')"
+                    :shortcut="['M']"
+                    @click="
+                      () => {
+                        handleMockServerAction()
+                        hide()
+                      }
+                    "
+                  />
+                  <HoppSmartItem
+                    v-if="!hasNoTeamAccess"
                     ref="edit"
                     :icon="IconEdit"
                     :label="t('action.edit')"
@@ -136,26 +247,42 @@
                     "
                   />
                   <HoppSmartItem
-                    ref="exportAction"
-                    :icon="IconDownload"
-                    :label="t('export.title')"
-                    :shortcut="['X']"
-                    :loading="exportLoading"
+                    v-if="!hasNoTeamAccess && isChildrenSortable"
+                    ref="sortAction"
+                    :icon="IconArrowUpDown"
+                    :label="t('action.sort')"
+                    :shortcut="['S']"
                     @click="
                       () => {
-                        emit('export-data'),
-                          collectionsType === 'my-collections' ? hide() : null
+                        sortCollection()
+                        hide()
                       }
                     "
                   />
                   <HoppSmartItem
-                    ref="deleteAction"
-                    :icon="IconTrash2"
-                    :label="t('action.delete')"
-                    :shortcut="['⌫']"
+                    v-if="!hasNoTeamAccess"
+                    ref="duplicateAction"
+                    :icon="IconCopy"
+                    :label="t('action.duplicate')"
+                    :loading="duplicateCollectionLoading"
+                    :shortcut="['D']"
                     @click="
                       () => {
-                        emit('remove-collection')
+                        ;(emit('duplicate-collection'),
+                          collectionsType === 'my-collections' ? hide() : null)
+                      }
+                    "
+                  />
+                  <HoppSmartItem
+                    v-if="!hasNoTeamAccess"
+                    ref="exportAction"
+                    :icon="IconDownload"
+                    :label="t('export.collection')"
+                    :shortcut="['X']"
+                    :loading="exportLoading"
+                    @click="
+                      () => {
+                        emit('export-data')
                         hide()
                       }
                     "
@@ -168,6 +295,20 @@
                     @click="
                       () => {
                         emit('edit-properties')
+                        hide()
+                      }
+                    "
+                  />
+
+                  <HoppSmartItem
+                    v-if="!hasNoTeamAccess"
+                    ref="deleteAction"
+                    :icon="IconTrash2"
+                    :label="t('action.delete')"
+                    :shortcut="['⌫']"
+                    @click="
+                      () => {
+                        emit('remove-collection')
                         hide()
                       }
                     "
@@ -197,26 +338,42 @@
 </template>
 
 <script setup lang="ts">
-import IconCheckCircle from "~icons/lucide/check-circle"
-import IconFolderPlus from "~icons/lucide/folder-plus"
-import IconFilePlus from "~icons/lucide/file-plus"
-import IconMoreVertical from "~icons/lucide/more-vertical"
-import IconDownload from "~icons/lucide/download"
-import IconTrash2 from "~icons/lucide/trash-2"
-import IconEdit from "~icons/lucide/edit"
-import IconFolder from "~icons/lucide/folder"
-import IconFolderOpen from "~icons/lucide/folder-open"
-import IconSettings2 from "~icons/lucide/settings-2"
-import { ref, computed, watch } from "vue"
-import { HoppCollection } from "@hoppscotch/data"
 import { useI18n } from "@composables/i18n"
+import { useDocumentationVisibility } from "~/composables/documentationVisibility"
+import { useGqlWorkspaceVisibility } from "~/composables/gqlWorkspaceVisibility"
+import { HoppCollection } from "@hoppscotch/data"
+import { computed, ref, watch } from "vue"
 import { TippyComponent } from "vue-tippy"
+import { useReadonlyStream } from "~/composables/stream"
 import { TeamCollection } from "~/helpers/teams/TeamCollection"
 import {
   changeCurrentReorderStatus,
   currentReorderingStatus$,
 } from "~/newstore/reordering"
-import { useReadonlyStream } from "~/composables/stream"
+import IconCheckCircle from "~icons/lucide/check-circle"
+import IconCopy from "~icons/lucide/copy"
+import IconDownload from "~icons/lucide/download"
+import IconEdit from "~icons/lucide/edit"
+import IconFilePlus from "~icons/lucide/file-plus"
+import IconFolder from "~icons/lucide/folder"
+import IconFolderOpen from "~icons/lucide/folder-open"
+import IconFolderPlus from "~icons/lucide/folder-plus"
+import IconMoreVertical from "~icons/lucide/more-vertical"
+import IconPlaySquare from "~icons/lucide/play-square"
+import IconServer from "~icons/lucide/server"
+import IconSettings2 from "~icons/lucide/settings-2"
+import IconTrash2 from "~icons/lucide/trash-2"
+import IconArrowUpDown from "~icons/lucide/arrow-up-down"
+import IconBook from "~icons/lucide/book"
+import IconGraphql from "~icons/hopp/graphql"
+import { CurrentSortValuesService } from "~/services/current-sort.service"
+import { useService } from "dioc/vue"
+import { useMockServerStatus } from "~/composables/mockServer"
+import { useMockServerVisibility } from "~/composables/mockServerVisibility"
+import { platform } from "~/platform"
+import { invokeAction } from "~/helpers/actions"
+import { DocumentationService } from "~/services/documentation.service"
+import IconGlobe from "~icons/lucide/globe"
 
 type CollectionType = "my-collections" | "team-collections"
 type FolderType = "collection" | "folder"
@@ -240,6 +397,8 @@ const props = withDefaults(
     hasNoTeamAccess?: boolean
     collectionMoveLoading?: string[]
     isLastItem?: boolean
+    duplicateCollectionLoading?: boolean
+    teamLoadingCollections?: string[]
   }>(),
   {
     id: "",
@@ -251,42 +410,143 @@ const props = withDefaults(
     exportLoading: false,
     hasNoTeamAccess: false,
     isLastItem: false,
+    duplicateCollectionLoading: false,
+    collectionMoveLoading: () => [],
+    teamLoadingCollections: () => [],
   }
 )
 
 const emit = defineEmits<{
   (event: "toggle-children"): void
   (event: "add-request"): void
+  (event: "add-gql-request"): void
   (event: "add-folder"): void
+  (event: "run-collection"): void
   (event: "edit-collection"): void
   (event: "edit-properties"): void
+  (event: "duplicate-collection"): void
+  (event: "open-documentation"): void
   (event: "export-data"): void
   (event: "remove-collection"): void
+  (event: "create-mock-server"): void
   (event: "drop-event", payload: DataTransfer): void
   (event: "drag-event", payload: DataTransfer): void
   (event: "dragging", payload: boolean): void
   (event: "update-collection-order", payload: DataTransfer): void
   (event: "update-last-collection-order", payload: DataTransfer): void
+  (event: "run-collection", collectionID: string): void
+  (
+    event: "sort-collections",
+    payload: {
+      collectionID: string
+      sortOrder: "asc" | "desc"
+      collectionRefID: string
+    }
+  ): void
 }>()
 
-const tippyActions = ref<TippyComponent | null>(null)
+const tippyActions = ref<HTMLDivElement | null>(null)
 const requestAction = ref<HTMLButtonElement | null>(null)
+const gqlRequestAction = ref<HTMLButtonElement | null>(null)
 const folderAction = ref<HTMLButtonElement | null>(null)
 const edit = ref<HTMLButtonElement | null>(null)
+const duplicateAction = ref<HTMLButtonElement | null>(null)
 const deleteAction = ref<HTMLButtonElement | null>(null)
 const exportAction = ref<HTMLButtonElement | null>(null)
+const mockServerAction = ref<HTMLButtonElement | null>(null)
 const options = ref<TippyComponent | null>(null)
-const propertiesAction = ref<TippyComponent | null>(null)
+const propertiesAction = ref<HTMLButtonElement | null>(null)
+const runCollectionAction = ref<HTMLButtonElement | null>(null)
+const sortAction = ref<HTMLButtonElement | null>(null)
+const documentationAction = ref<HTMLButtonElement | null>(null)
+
+const { isDocumentationVisible } = useDocumentationVisibility()
+const { isGqlWorkspaceEnabled } = useGqlWorkspaceVisibility()
 
 const dragging = ref(false)
 const ordering = ref(false)
 const orderingLastItem = ref(false)
 const dropItemID = ref("")
 
+/**
+ * Determines if the collection/folder is sortable.
+ * A collection/folder is sortable if it has more than one request or more than one child folder.
+ * or one request and one child folder.
+ */
+const isChildrenSortable = computed(() => {
+  if (!props.data) return false
+
+  if (props.collectionsType === "my-collections") {
+    const collection = props.data as HoppCollection
+    const req = collection.requests.length
+    const fol = collection.folders.length
+
+    return req > 1 || fol > 1 || (req === 1 && fol === 1)
+  }
+
+  const teamCollection = props.data as TeamCollection
+  const req = teamCollection.requests?.length ?? 0
+  const child = teamCollection.children?.length ?? 0
+
+  return req > 1 || child > 1 || (req === 1 && child === 1)
+})
+
 const currentReorderingStatus = useReadonlyStream(currentReorderingStatus$, {
   type: "collection",
   id: "",
   parentID: "",
+})
+
+const currentSortValuesService = useService(CurrentSortValuesService)
+
+const collectionRefID = computed(() => {
+  return props.collectionsType === "my-collections"
+    ? (props.data as HoppCollection)._ref_id
+    : props.id
+})
+
+const currentSortOrder = ref<"asc" | "desc">(
+  currentSortValuesService.getSortOption(collectionRefID.value ?? "personal")
+    ?.sortOrder ?? "asc"
+)
+const isCollectionLoading = computed(() => {
+  return props.teamLoadingCollections!.includes(props.id)
+})
+
+// Mock Server Status
+const { isMockServerVisible } = useMockServerVisibility()
+const { getMockServerStatus } = useMockServerStatus()
+
+const mockServerStatus = computed(() => {
+  if (!isMockServerVisible.value) {
+    return { exists: false, isActive: false }
+  }
+
+  const collectionId =
+    props.collectionsType === "my-collections"
+      ? ((props.data as HoppCollection).id ??
+        (props.data as HoppCollection)._ref_id)
+      : (props.data as TeamCollection).id
+
+  return getMockServerStatus(collectionId || "")
+})
+
+// Published Doc Status
+const documentationService = useService(DocumentationService)
+
+const publishedDocStatus = computed(() => {
+  const collectionId =
+    props.collectionsType === "my-collections"
+      ? ((props.data as HoppCollection).id ??
+        (props.data as HoppCollection)._ref_id)
+      : (props.data as TeamCollection).id
+
+  return documentationService.getPublishedDocStatus(collectionId || "")
+})
+
+// Determine if this is a root collection (not a child folder)
+const isRootCollection = computed(() => {
+  return props.folderType === "collection"
 })
 
 // Used to determine if the collection is being dragged to a different destination
@@ -316,10 +576,10 @@ const collectionName = computed(() => {
 })
 
 watch(
-  () => props.exportLoading,
-  (val) => {
-    if (!val) {
-      options.value!.tippy.hide()
+  () => [props.exportLoading, props.duplicateCollectionLoading],
+  ([newExportLoadingVal, newDuplicateCollectionLoadingVal]) => {
+    if (!newExportLoadingVal && !newDuplicateCollectionLoadingVal) {
+      options.value!.tippy?.hide()
     }
   }
 )
@@ -443,6 +703,42 @@ const isCollLoading = computed(() => {
   }
   return false
 })
+
+const sortCollection = () => {
+  currentSortOrder.value = currentSortOrder.value === "asc" ? "desc" : "asc"
+
+  emit("sort-collections", {
+    collectionID: props.id,
+    sortOrder: currentSortOrder.value,
+    collectionRefID: collectionRefID.value ?? "personal",
+  })
+}
+
+const handleMockServerAction = () => {
+  const currentUser = platform.auth.getCurrentUser()
+
+  if (!currentUser) {
+    // Show login modal if user is not authenticated
+    invokeAction("modals.login.toggle")
+    return
+  }
+
+  // User is authenticated, proceed with mock server creation
+  emit("create-mock-server")
+}
+
+const handleDocumentationAction = () => {
+  const currentUser = platform.auth.getCurrentUser()
+
+  if (!currentUser) {
+    // Show login modal if user is not authenticated
+    invokeAction("modals.login.toggle")
+    return
+  }
+
+  // User is authenticated, proceed with opening documentation
+  emit("open-documentation")
+}
 
 const resetDragState = () => {
   dragging.value = false

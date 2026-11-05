@@ -4,9 +4,9 @@
       <Pane style="height: auto">
         <AppHeader />
       </Pane>
-      <Pane :class="spacerClass" class="flex flex-1 !overflow-auto md:mb-0">
+      <Pane :class="spacerClass" class="flex flex-1 !overflow-hidden md:mb-0">
         <Splitpanes
-          class="no-splitter"
+          class="no-splitter min-w-0 flex-1"
           :dbl-click-splitter="false"
           :horizontal="!mdAndLarger"
         >
@@ -22,8 +22,8 @@
               :dbl-click-splitter="false"
               horizontal
             >
-              <Pane class="flex flex-1 !overflow-auto">
-                <main class="flex w-full flex-1" role="main">
+              <Pane class="flex flex-1 !overflow-hidden">
+                <main class="flex w-full flex-1 overflow-auto" role="main">
                   <RouterView
                     v-slot="{ Component }"
                     class="flex min-w-0 flex-1"
@@ -37,6 +37,7 @@
             </Splitpanes>
           </Pane>
         </Splitpanes>
+        <AichatAssistant v-if="hasAIChat" />
       </Pane>
       <Pane v-if="mdAndLarger" style="height: auto">
         <AppFooter />
@@ -57,6 +58,14 @@
       @hide-modal="showSupport = false"
     />
     <AppOptions v-else :show="showSupport" @hide-modal="showSupport = false" />
+
+    <!-- Let additional stuff be registered -->
+    <template
+      v-for="(component, index) in rootExtensionComponents"
+      :key="index"
+    >
+      <component :is="component" />
+    </template>
   </div>
 </template>
 
@@ -78,6 +87,7 @@ import { platform } from "~/platform"
 import { HoppSpotlightSessionEventData } from "~/platform/analytics"
 import { PersistenceService } from "~/services/persistence"
 import { SpotlightService } from "~/services/spotlight"
+import { UIExtensionService } from "~/services/ui-extension.service"
 
 const router = useRouter()
 
@@ -96,8 +106,14 @@ const t = useI18n()
 
 const persistenceService = useService(PersistenceService)
 const spotlightService = useService(SpotlightService)
+const uiExtensionService = useService(UIExtensionService)
+
+const rootExtensionComponents = uiExtensionService.rootUIExtensionComponents
 
 const HAS_OPENED_SPOTLIGHT = useSetting("HAS_OPENED_SPOTLIGHT")
+
+// Fixed per platform; a platform that can't chat skips the assistant entirely.
+const hasAIChat = !!platform.experiments?.aiExperiments?.chat
 
 onBeforeMount(() => {
   if (!mdAndLarger.value) {
@@ -106,9 +122,9 @@ onBeforeMount(() => {
   }
 })
 
-onMounted(() => {
+onMounted(async () => {
   const cookiesAllowed =
-    persistenceService.getLocalConfig("cookiesAllowed") === "yes"
+    (await persistenceService.getLocalConfig("cookiesAllowed")) === "yes"
   const platformAllowsCookiePrompts =
     platform.platformFeatureFlags.promptAsUsingCookies ?? true
 
@@ -118,8 +134,8 @@ onMounted(() => {
       action: [
         {
           text: `${t("action.learn_more")}`,
-          onClick: (_, toastObject) => {
-            persistenceService.setLocalConfig("cookiesAllowed", "yes")
+          onClick: async (_, toastObject) => {
+            await persistenceService.setLocalConfig("cookiesAllowed", "yes")
             toastObject.goAway(0)
             window
               .open("https://docs.hoppscotch.io/support/privacy", "_blank")
@@ -128,8 +144,8 @@ onMounted(() => {
         },
         {
           text: `${t("action.dismiss")}`,
-          onClick: (_, toastObject) => {
-            persistenceService.setLocalConfig("cookiesAllowed", "yes")
+          onClick: async (_, toastObject) => {
+            await persistenceService.setLocalConfig("cookiesAllowed", "yes")
             toastObject.goAway(0)
           },
         },

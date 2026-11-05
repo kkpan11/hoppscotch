@@ -11,7 +11,7 @@ import { useToast } from "~/composables/toast"
 import { useService } from "dioc/vue"
 import * as E from "fp-ts/Either"
 import { onMounted } from "vue"
-import { RESTTabService } from "~/services/tab/rest"
+import { WorkspaceTabsService } from "~/services/tab/workspace-tabs"
 
 import { useRouter } from "vue-router"
 
@@ -29,7 +29,7 @@ const toast = useToast()
 
 const gqlTabs = useService(GQLTabService)
 const persistenceService = useService(PersistenceService)
-const restTabs = useService(RESTTabService)
+const workspaceTabs = useService(WorkspaceTabsService)
 
 function translateOAuthRedirectError(error: string) {
   switch (error) {
@@ -69,7 +69,7 @@ function translateOAuthRedirectError(error: string) {
 
 onMounted(async () => {
   const localOAuthTempConfig =
-    persistenceService.getLocalConfig("oauth_temp_config")
+    await persistenceService.getLocalConfig("oauth_temp_config")
 
   if (!localOAuthTempConfig) {
     toast.error(t("authorization.oauth.something_went_wrong_on_oauth_redirect"))
@@ -97,7 +97,12 @@ onMounted(async () => {
       ...persistedOAuthConfig,
       token: tokenInfo.right.access_token,
     }
-    persistenceService.setLocalConfig(
+
+    if (tokenInfo.right.refresh_token) {
+      authConfig.refresh_token = tokenInfo.right.refresh_token
+    }
+
+    await persistenceService.setLocalConfig(
       "oauth_temp_config",
       JSON.stringify(authConfig)
     )
@@ -109,7 +114,7 @@ onMounted(async () => {
   }
 
   const routeToRedirect = source === "GraphQL" ? "/graphql" : "/"
-  const tabService = source === "GraphQL" ? gqlTabs : restTabs
+  const tabService = source === "GraphQL" ? gqlTabs : workspaceTabs
 
   if (
     tabService.currentActiveTab.value.document.request.auth.authType ===
@@ -117,6 +122,14 @@ onMounted(async () => {
   ) {
     tabService.currentActiveTab.value.document.request.auth.grantTypeInfo.token =
       tokenInfo.right.access_token
+
+    if (
+      tabService.currentActiveTab.value.document.request.auth.grantTypeInfo
+        .grantType === "AUTHORIZATION_CODE"
+    ) {
+      tabService.currentActiveTab.value.document.request.auth.grantTypeInfo.refreshToken =
+        tokenInfo.right.refresh_token
+    }
 
     toast.success(t("authorization.oauth.token_fetched_successfully"))
   }

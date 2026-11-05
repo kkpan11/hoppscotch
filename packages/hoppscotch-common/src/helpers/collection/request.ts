@@ -4,7 +4,7 @@ import {
   HoppRESTRequest,
 } from "@hoppscotch/data"
 import { getAffectedIndexes } from "./affectedIndex"
-import { RESTTabService } from "~/services/tab/rest"
+import { WorkspaceTabsService } from "~/services/tab/workspace-tabs"
 import { getService } from "~/modules/dioc"
 
 /**
@@ -37,7 +37,7 @@ export function resolveSaveContextOnRequestReorder(payload: {
   // if (newIndex === -1) remove it from the map because it will be deleted
   if (newIndex === -1) affectedIndexes.delete(lastIndex)
 
-  const tabService = getService(RESTTabService)
+  const tabService = getService(WorkspaceTabsService)
   const tabs = tabService.getTabsRefTo((tab) => {
     return (
       tab.document.saveContext?.originLocation === "user-collection" &&
@@ -59,27 +59,16 @@ export function resolveSaveContextOnRequestReorder(payload: {
 export function getRequestsByPath(
   collections: HoppCollection[],
   path: string
-): HoppRESTRequest[] | HoppGQLRequest[] {
+): (HoppRESTRequest | HoppGQLRequest)[] {
   // path will be like this "0/0/1" these are the indexes of the folders
   const pathArray = path.split("/").map((index) => parseInt(index))
 
   let currentCollection = collections[pathArray[0]]
 
-  if (pathArray.length === 1) {
-    const latestVersionedRequests = currentCollection.requests.filter(
-      (req): req is HoppRESTRequest => req.v === "3"
-    )
-
-    return latestVersionedRequests
-  }
   for (let i = 1; i < pathArray.length; i++) {
     const folder = currentCollection.folders[pathArray[i]]
     if (folder) currentCollection = folder
   }
 
-  const latestVersionedRequests = currentCollection.requests.filter(
-    (req): req is HoppRESTRequest => req.v === "3"
-  )
-
-  return latestVersionedRequests
+  return currentCollection.requests as (HoppRESTRequest | HoppGQLRequest)[]
 }

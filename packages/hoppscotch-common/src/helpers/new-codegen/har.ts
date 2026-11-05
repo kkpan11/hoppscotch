@@ -67,18 +67,34 @@ const buildHarPostParams = (
   return req.body.body.flatMap((entry) => {
     if (entry.isFile) {
       // We support multiple files
-      return entry.value.map(
+      const values = Array.isArray(entry.value) ? entry.value : [entry.value]
+      return values.map(
         (file) =>
           <Har.Param>{
             name: entry.key,
             fileName: entry.key, // TODO: Blob doesn't contain file info, anyway to bring file name here ?
-            contentType: file.type,
+            contentType: entry.contentType
+              ? entry.contentType
+              : typeof file === "object" && file && "type" in file
+                ? file.type
+                : undefined,
           }
       )
     }
+
+    if (entry.contentType) {
+      return {
+        name: entry.key,
+        value: entry.value as string,
+        fileName: entry.key,
+        contentType: entry.contentType,
+      }
+    }
+
     return {
       name: entry.key,
-      value: entry.value,
+      value: entry.value as string,
+      contentType: entry.contentType,
     }
   })
 }
@@ -98,9 +114,32 @@ const buildHarPostData = (req: HoppRESTRequest): Har.PostData | undefined => {
     }
   }
 
+  // application/octet-stream bodies are File | null; emit @filename for file uploads
+  if (req.body.contentType === "application/octet-stream") {
+    const file = req.body.body
+
+    if (!file) {
+      return {
+        mimeType: req.body.contentType,
+        text: "",
+      }
+    }
+
+    // `path` exists in some desktop runtimes; `name` is the standard File field.
+    const filename =
+      "path" in file && typeof file.path === "string" && file.path
+        ? file.path
+        : file.name || "<binary-file>"
+
+    return {
+      mimeType: req.body.contentType,
+      text: `@${filename}`,
+    }
+  }
+
   return {
     mimeType: req.body.contentType, // Let's assume by default content type is JSON
-    text: req.body.body,
+    text: (req.body.body as string) ?? "",
   }
 }
 

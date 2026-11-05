@@ -1,26 +1,44 @@
 import {
+  HoppGQLRequest,
   HoppRESTAuth,
-  HoppRESTHeader,
   HoppRESTRequest,
+  getDefaultGQLRequest,
   getDefaultRESTRequest,
+  isGQLRequest,
 } from "@hoppscotch/data"
 import axios from "axios"
 import { Service } from "dioc"
 import * as E from "fp-ts/Either"
 import { Ref, ref } from "vue"
-
-import { runGQLQuery } from "../backend/GQLClient"
-import {
-  GetCollectionChildrenDocument,
-  GetCollectionRequestsDocument,
-  GetSingleCollectionDocument,
-  GetSingleRequestDocument,
-} from "../backend/graphql"
-import { TeamCollection } from "./TeamCollection"
+import { getSingleCollection, TeamCollection } from "./TeamCollection"
+import { hasActualScript } from "@hoppscotch/js-sandbox/scripting"
 
 import { platform } from "~/platform"
 import { HoppInheritedProperty } from "../types/HoppInheritedProperties"
-import { TeamRequest } from "./TeamRequest"
+import {
+  getSingleRequest,
+  getCollectionChildRequests,
+  TeamRequest,
+  getCollectionChildCollections,
+} from "./TeamRequest"
+import { CollectionDataProps } from "../backend/helpers"
+
+/**
+ * Parses collection data that may be double-encoded JSON
+ * Handles both single and double JSON stringification
+ */
+const parseCollectionData = (data: string): CollectionDataProps | null => {
+  try {
+    let parsed = JSON.parse(data)
+    // Handle double-encoded JSON (string containing JSON string)
+    if (typeof parsed === "string") {
+      parsed = JSON.parse(parsed)
+    }
+    return parsed as CollectionDataProps
+  } catch {
+    return null
+  }
+}
 
 type CollectionSearchMeta = {
   isSearchResult?: boolean
@@ -53,9 +71,12 @@ type _SearchRequest = {
   id: string
   collectionID: string
   title: string
+  // Search hits store a display stub; rows inserted while expanding store the
+  // full parsed request. Team collections hold both protocols and GQL
+  // requests have no `method` — readers fall back to a "GQL" badge.
   request: {
     name: string
-    method: string
+    method?: string
   }
   meta?: CollectionSearchMeta
 }
@@ -155,14 +176,18 @@ function convertToTeamTree(
     if (isAlreadyInserted) return
 
     if (parentCollection) {
-      const requestSchemaParsedResult = HoppRESTRequest.safeParse(
-        request.request
-      )
-
-      const effectiveRequest =
-        requestSchemaParsedResult.type === "ok"
-          ? requestSchemaParsedResult.value
-          : getDefaultRESTRequest()
+      // Unified collection: a single team collection can hold REST and GQL requests.
+      // Discriminate by shape so GQL search hits don't get clobbered into a blank REST request.
+      let effectiveRequest: HoppRESTRequest | HoppGQLRequest
+      if (isGQLRequest(request.request)) {
+        const gqlParsed = HoppGQLRequest.safeParse(request.request)
+        effectiveRequest =
+          gqlParsed.type === "ok" ? gqlParsed.value : getDefaultGQLRequest()
+      } else {
+        const restParsed = HoppRESTRequest.safeParse(request.request)
+        effectiveRequest =
+          restParsed.type === "ok" ? restParsed.value : getDefaultRESTRequest()
+      }
 
       parentCollection.requests = parentCollection.requests || []
       parentCollection.requests.push({
@@ -214,7 +239,12 @@ export class TeamSearchService extends Service {
     this.searchResultsRequests = {}
     this.expandedCollections.value = []
 
-    const axiosPlatformConfig = platform.auth.axiosPlatformConfig?.() ?? {}
+    const getAxiosPlatformConfig = async () => {
+      await platform.auth.waitProbableLoginToConfirm()
+      return platform.auth.axiosPlatformConfig?.() ?? {}
+    }
+
+    const axiosPlatformConfig = await getAxiosPlatformConfig()
 
     try {
       const searchResponse = await axios.get(
@@ -322,7 +352,9 @@ export class TeamSearchService extends Service {
           {
             collectionID: request.collectionID,
             name: request.title,
-            method: request.request.method,
+            // GQL rows have no `method` — badge them as GQL instead of
+            // rendering an undefined method chip
+            method: request.request.method ?? "GQL",
             id: request.id,
           },
           Object.values(this.searchResultsCollections)
@@ -335,7 +367,7 @@ export class TeamSearchService extends Service {
     this.teamsSearchResultsLoading.value = false
   }
 
-  cascadeParentCollectionForHeaderAuthForSearchResults = (
+  cascadeParentCollectionForPropertiesForSearchResults = (
     collectionID: string
   ): HoppInheritedProperty => {
     const defaultInheritedAuth: HoppInheritedProperty["auth"] = {
@@ -349,15 +381,27 @@ export class TeamSearchService extends Service {
 
     const defaultInheritedHeaders: HoppInheritedProperty["headers"] = []
 
+    const defaultInheritedVariables: HoppInheritedProperty["variables"] = []
+
+    const defaultInheritedScripts: HoppInheritedProperty["scripts"] = []
+
     const collection = Object.values(this.searchResultsCollections).find(
       (col) => col.id === collectionID
     )
 
     if (!collection)
-      return { auth: defaultInheritedAuth, headers: defaultInheritedHeaders }
+      return {
+        auth: defaultInheritedAuth,
+        headers: defaultInheritedHeaders,
+        variables: defaultInheritedVariables,
+        scripts: defaultInheritedScripts,
+      }
 
     const inheritedAuthData = this.findInheritableParentAuth(collectionID)
     const inheritedHeadersData = this.findInheritableParentHeaders(collectionID)
+    const inheritedVariablesData =
+      this.findInheritableParentVariables(collectionID)
+    const inheritedScriptsData = this.findInheritableParentScripts(collectionID)
 
     return {
       auth: E.isRight(inheritedAuthData)
@@ -366,6 +410,12 @@ export class TeamSearchService extends Service {
       headers: E.isRight(inheritedHeadersData)
         ? Object.values(inheritedHeadersData.right)
         : defaultInheritedHeaders,
+      variables: E.isRight(inheritedVariablesData)
+        ? Object.values(inheritedVariablesData.right)
+        : defaultInheritedVariables,
+      scripts: E.isRight(inheritedScriptsData)
+        ? Object.values(inheritedScriptsData.right)
+        : defaultInheritedScripts,
     }
   }
 
@@ -389,14 +439,11 @@ export class TeamSearchService extends Service {
 
     // has inherited data
     if (collection.data) {
-      const parentInheritedData = JSON.parse(collection.data) as {
-        auth: HoppRESTAuth
-        headers: HoppRESTHeader[]
-      }
+      const parentInheritedData = parseCollectionData(collection.data)
 
-      const inheritedAuth = parentInheritedData.auth
+      const inheritedAuth = parentInheritedData?.auth
 
-      if (inheritedAuth.authType !== "inherit") {
+      if (inheritedAuth && inheritedAuth.authType !== "inherit") {
         return E.right({
           parentID: collectionID,
           parentName: collection.title,
@@ -432,12 +479,9 @@ export class TeamSearchService extends Service {
 
     // see if it has headers to inherit, if yes, add it to the existing headers
     if (collection.data) {
-      const parentInheritedData = JSON.parse(collection.data) as {
-        auth: HoppRESTAuth
-        headers: HoppRESTHeader[]
-      }
+      const parentInheritedData = parseCollectionData(collection.data)
 
-      const inheritedHeaders = parentInheritedData.headers
+      const inheritedHeaders = parentInheritedData?.headers
 
       if (inheritedHeaders) {
         inheritedHeaders.forEach((header) => {
@@ -460,6 +504,86 @@ export class TeamSearchService extends Service {
     }
 
     return E.right(existingHeaders)
+  }
+
+  findInheritableParentVariables = (
+    collectionID: string,
+    existingVariables: HoppInheritedProperty["variables"] = []
+  ): E.Either<string, HoppInheritedProperty["variables"]> => {
+    const collection = Object.values(this.searchResultsCollections).find(
+      (col) => col.id === collectionID
+    )
+
+    const vars = [...Object.values(existingVariables)]
+
+    if (!collection) {
+      return E.left("PARENT_NOT_FOUND" as const)
+    }
+
+    if (collection.data) {
+      const parentData = parseCollectionData(collection.data)
+
+      const variables = parentData?.variables
+
+      if (variables) {
+        vars.push({
+          parentID: collection.id,
+          parentName: collection.title,
+          inheritedVariables: variables,
+        })
+      }
+    }
+
+    if (collection.parentID) {
+      return this.findInheritableParentVariables(collection.parentID, vars)
+    }
+
+    return E.right(vars)
+  }
+
+  findInheritableParentScripts = (
+    collectionID: string,
+    existingScripts: HoppInheritedProperty["scripts"] = []
+  ): E.Either<string, HoppInheritedProperty["scripts"]> => {
+    const collection = Object.values(this.searchResultsCollections).find(
+      (col) => col.id === collectionID
+    )
+
+    if (!collection) {
+      return E.left("PARENT_NOT_FOUND" as const)
+    }
+
+    // Recurse to parent first to build root→parent→child order
+    let scripts = [...existingScripts]
+    if (collection.parentID) {
+      const parentResult = this.findInheritableParentScripts(
+        collection.parentID,
+        scripts
+      )
+      if (E.isLeft(parentResult)) {
+        return parentResult
+      }
+      scripts = parentResult.right
+    }
+
+    // Then add current collection's scripts
+    if (collection.data) {
+      const parentData = parseCollectionData(collection.data)
+
+      const preRequestScript = parentData?.preRequestScript ?? ""
+      const testScript = parentData?.testScript ?? ""
+
+      if (hasActualScript(preRequestScript) || hasActualScript(testScript)) {
+        scripts.push({
+          parentID: collection.id,
+          parentName: collection.title,
+          preRequestScript,
+          testScript,
+        })
+      }
+    }
+
+    return E.right(scripts)
   }
 
   expandCollection = async (collectionID: string) => {
@@ -551,38 +675,6 @@ export class TeamSearchService extends Service {
     this.expandedCollections.value.push(collectionID)
   }
 }
-
-const getSingleCollection = (collectionID: string) =>
-  runGQLQuery({
-    query: GetSingleCollectionDocument,
-    variables: {
-      collectionID,
-    },
-  })
-
-const getSingleRequest = (requestID: string) =>
-  runGQLQuery({
-    query: GetSingleRequestDocument,
-    variables: {
-      requestID,
-    },
-  })
-
-const getCollectionChildCollections = (collectionID: string) =>
-  runGQLQuery({
-    query: GetCollectionChildrenDocument,
-    variables: {
-      collectionID,
-    },
-  })
-
-const getCollectionChildRequests = (collectionID: string) =>
-  runGQLQuery({
-    query: GetCollectionRequestsDocument,
-    variables: {
-      collectionID,
-    },
-  })
 
 const formatTeamsSearchResultsForSpotlight = (
   request: {

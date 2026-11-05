@@ -34,13 +34,18 @@ import {
 } from 'src/infra-config/input-args';
 import { InfraConfigEnum } from 'src/types/InfraConfig';
 import { ServiceStatus } from 'src/infra-config/helper';
+import {
+  FetchAllShortcodesArgs,
+  FetchAllTeamsV2Args,
+  FetchAllUsersV2Args,
+} from './input-types.args';
 
 @UseGuards(GqlThrottlerGuard)
 @Resolver(() => Infra)
 export class InfraResolver {
   constructor(
-    private adminService: AdminService,
-    private infraConfigService: InfraConfigService,
+    private readonly adminService: AdminService,
+    private readonly infraConfigService: InfraConfigService,
   ) {}
 
   @Query(() => Infra, {
@@ -92,19 +97,11 @@ export class InfraResolver {
     description: 'Returns a list of all the users in infra',
   })
   @UseGuards(GqlAuthGuard, GqlAdminGuard)
-  async allUsersV2(
-    @Args({
-      name: 'searchString',
-      nullable: true,
-      description: 'Search on users displayName or email',
-    })
-    searchString: string,
-    @Args() paginationOption: OffsetPaginationArgs,
-  ): Promise<AuthUser[]> {
-    const users = await this.adminService.fetchUsersV2(
-      searchString,
-      paginationOption,
-    );
+  async allUsersV2(@Args() args: FetchAllUsersV2Args): Promise<AuthUser[]> {
+    const users = await this.adminService.fetchUsersV2(args.searchString, {
+      skip: args.skip,
+      take: args.take,
+    });
     return users;
   }
 
@@ -120,9 +117,21 @@ export class InfraResolver {
 
   @ResolveField(() => [Team], {
     description: 'Returns a list of all the teams in the infra',
+    deprecationReason: 'Use allTeamsV2 instead',
   })
   async allTeams(@Args() args: PaginationArgs): Promise<Team[]> {
     const teams = await this.adminService.fetchAllTeams(args.cursor, args.take);
+    return teams;
+  }
+
+  @ResolveField(() => [Team], {
+    description: 'Returns a list of all the teams in the infra',
+  })
+  async allTeamsV2(@Args() args: FetchAllTeamsV2Args): Promise<Team[]> {
+    const teams = await this.adminService.fetchAllTeamsV2(args.searchString, {
+      skip: args.skip,
+      take: args.take,
+    });
     return teams;
   }
 
@@ -214,9 +223,8 @@ export class InfraResolver {
     })
     teamID: string,
   ) {
-    const invitations = await this.adminService.pendingInvitationCountInTeam(
-      teamID,
-    );
+    const invitations =
+      await this.adminService.pendingInvitationCountInTeam(teamID);
     return invitations;
   }
 
@@ -251,19 +259,11 @@ export class InfraResolver {
   @ResolveField(() => [ShortcodeWithUserEmail], {
     description: 'Returns a list of all the shortcodes in the infra',
   })
-  async allShortcodes(
-    @Args() args: PaginationArgs,
-    @Args({
-      name: 'userEmail',
-      nullable: true,
-      description: 'Users email to filter shortcodes by',
-    })
-    userEmail: string,
-  ) {
+  async allShortcodes(@Args() args: FetchAllShortcodesArgs) {
     return await this.adminService.fetchAllShortcodes(
       args.cursor,
       args.take,
-      userEmail,
+      args.userEmail,
     );
   }
 
@@ -352,11 +352,48 @@ export class InfraResolver {
     })
     providerInfo: EnableAndDisableSSOArgs[],
   ) {
-    const isUpdated = await this.infraConfigService.enableAndDisableSSO(
-      providerInfo,
-    );
+    const isUpdated =
+      await this.infraConfigService.enableAndDisableSSO(providerInfo);
     if (E.isLeft(isUpdated)) throwErr(isUpdated.left);
 
+    return true;
+  }
+
+  @Mutation(() => Boolean, {
+    description: 'Enable or Disable SMTP for sending emails',
+  })
+  @UseGuards(GqlAuthGuard, GqlAdminGuard)
+  async toggleSMTP(
+    @Args({
+      name: 'status',
+      type: () => ServiceStatus,
+      description: 'Toggle SMTP',
+    })
+    status: ServiceStatus,
+  ) {
+    const isUpdated =
+      await this.infraConfigService.enableAndDisableSMTP(status);
+    if (E.isLeft(isUpdated)) throwErr(isUpdated.left);
+    return true;
+  }
+
+  @Mutation(() => Boolean, {
+    description: 'Enable or Disable User History Storing in DB',
+  })
+  @UseGuards(GqlAuthGuard, GqlAdminGuard)
+  async toggleUserHistoryStore(
+    @Args({
+      name: 'status',
+      type: () => ServiceStatus,
+      description: 'Toggle User History Store',
+    })
+    status: ServiceStatus,
+  ) {
+    const isUpdated = await this.infraConfigService.toggleServiceStatus(
+      InfraConfigEnum.USER_HISTORY_STORE_ENABLED,
+      status,
+    );
+    if (E.isLeft(isUpdated)) throwErr(isUpdated.left);
     return true;
   }
 }

@@ -1,7 +1,6 @@
 import { AnyVariables, UseMutationResponse } from '@urql/vue';
 import { cloneDeep } from 'lodash-es';
 import { onMounted, ref } from 'vue';
-
 import { useI18n } from '~/composables/i18n';
 import {
   AllowedAuthProvidersDocument,
@@ -14,25 +13,31 @@ import {
   ResetInfraConfigsMutation,
   ServiceStatus,
   ToggleAnalyticsCollectionMutation,
+  ToggleSmtpMutation,
+  ToggleUserHistoryStoreMutation,
   UpdateInfraConfigsMutation,
 } from '~/helpers/backend/graphql';
 import {
   ALL_CONFIGS,
-  ConfigSection,
+  CUSTOM_MAIL_CONFIGS,
   ConfigTransform,
   GITHUB_CONFIGS,
   GOOGLE_CONFIGS,
   MAIL_CONFIGS,
   MICROSOFT_CONFIGS,
+  MOCK_SERVER_CONFIGS,
+  PROXY_URL_CONFIGS,
   ServerConfigs,
   UpdatedConfigs,
+  isFieldEmpty,
+  isValidSessionCookieName,
 } from '~/helpers/configs';
 import { getCompiledErrorMessage } from '~/helpers/errors';
 import { useToast } from './toast';
 import { useClientHandler } from './useClientHandler';
 
 /** Composable that handles all operations related to server configurations
- * @param updatedConfigs A Config Object contatining the updated configs
+ * @param updatedConfigs A Config Object containing the updated configs
  */
 export function useConfigHandler(updatedConfigs?: ServerConfigs) {
   const t = useI18n();
@@ -96,7 +101,7 @@ export function useConfigHandler(updatedConfigs?: ServerConfigs) {
           fields: {
             client_id: getFieldValue(InfraConfigEnum.GithubClientId),
             client_secret: getFieldValue(InfraConfigEnum.GithubClientSecret),
-            callback_url: getFieldValue(InfraConfigEnum.GoogleCallbackUrl),
+            callback_url: getFieldValue(InfraConfigEnum.GithubCallbackUrl),
             scope: getFieldValue(InfraConfigEnum.GithubScope),
           },
         },
@@ -114,10 +119,63 @@ export function useConfigHandler(updatedConfigs?: ServerConfigs) {
       },
       mailConfigs: {
         name: 'email',
-        enabled: allowedAuthProviders.value.includes(AuthProvider.Email),
+        enabled: getFieldValue(InfraConfigEnum.MailerSmtpEnable) === 'true',
         fields: {
+          email_auth: allowedAuthProviders.value.includes(AuthProvider.Email),
           mailer_smtp_url: getFieldValue(InfraConfigEnum.MailerSmtpUrl),
           mailer_from_address: getFieldValue(InfraConfigEnum.MailerAddressFrom),
+          mailer_smtp_host: getFieldValue(InfraConfigEnum.MailerSmtpHost),
+          mailer_smtp_port: getFieldValue(InfraConfigEnum.MailerSmtpPort),
+          mailer_smtp_user: getFieldValue(InfraConfigEnum.MailerSmtpUser),
+          mailer_smtp_password: getFieldValue(
+            InfraConfigEnum.MailerSmtpPassword
+          ),
+          mailer_smtp_secure:
+            getFieldValue(InfraConfigEnum.MailerSmtpSecure) === 'true',
+          mailer_smtp_ignore_tls:
+            getFieldValue(InfraConfigEnum.MailerSmtpIgnoreTls) === 'true',
+          mailer_tls_reject_unauthorized:
+            getFieldValue(InfraConfigEnum.MailerTlsRejectUnauthorized) ===
+            'true',
+          mailer_use_custom_configs:
+            getFieldValue(InfraConfigEnum.MailerUseCustomConfigs) === 'true',
+          mailer_smtp_auth_type:
+            getFieldValue(InfraConfigEnum.MailerSmtpAuthType) || 'login',
+          mailer_smtp_oauth2_user: getFieldValue(
+            InfraConfigEnum.MailerSmtpOauth2User
+          ),
+          mailer_smtp_oauth2_client_id: getFieldValue(
+            InfraConfigEnum.MailerSmtpOauth2ClientId
+          ),
+          mailer_smtp_oauth2_client_secret: getFieldValue(
+            InfraConfigEnum.MailerSmtpOauth2ClientSecret
+          ),
+          mailer_smtp_oauth2_refresh_token: getFieldValue(
+            InfraConfigEnum.MailerSmtpOauth2RefreshToken
+          ),
+          mailer_smtp_oauth2_access_url: getFieldValue(
+            InfraConfigEnum.MailerSmtpOauth2AccessUrl
+          ),
+        },
+      },
+      tokenConfigs: {
+        name: 'token',
+        fields: {
+          jwt_secret: getFieldValue(InfraConfigEnum.JwtSecret),
+          token_salt_complexity: getFieldValue(
+            InfraConfigEnum.TokenSaltComplexity
+          ),
+          magic_link_token_validity: getFieldValue(
+            InfraConfigEnum.MagicLinkTokenValidity
+          ),
+          refresh_token_validity: getFieldValue(
+            InfraConfigEnum.RefreshTokenValidity
+          ),
+          access_token_validity: getFieldValue(
+            InfraConfigEnum.AccessTokenValidity
+          ),
+          session_secret: getFieldValue(InfraConfigEnum.SessionSecret),
+          session_cookie_name: getFieldValue(InfraConfigEnum.SessionCookieName),
         },
       },
       dataSharingConfigs: {
@@ -126,6 +184,35 @@ export function useConfigHandler(updatedConfigs?: ServerConfigs) {
           (x) => x.name === 'ALLOW_ANALYTICS_COLLECTION' && x.value === 'true'
         ),
       },
+      historyConfig: {
+        name: 'history_settings',
+        enabled: !!infraConfigs.value.find(
+          (config) =>
+            config.name === 'USER_HISTORY_STORE_ENABLED' &&
+            config.value === 'ENABLE'
+        ),
+      },
+      rateLimitConfigs: {
+        name: 'rate_limit',
+        fields: {
+          rate_limit_ttl: getFieldValue(InfraConfigEnum.RateLimitTtl),
+          rate_limit_max: getFieldValue(InfraConfigEnum.RateLimitMax),
+        },
+      },
+      mockServerConfigs: {
+        name: 'mock_server',
+        fields: {
+          mock_server_wildcard_domain: getFieldValue(
+            InfraConfigEnum.MockServerWildcardDomain
+          ),
+        },
+      },
+      proxyUrlConfigs: {
+        name: 'proxy_app_url',
+        fields: {
+          proxy_app_url: getFieldValue(InfraConfigEnum.ProxyAppUrl),
+        },
+      },
     };
 
     // Cloning the current configs to working configs
@@ -133,25 +220,33 @@ export function useConfigHandler(updatedConfigs?: ServerConfigs) {
     workingConfigs.value = cloneDeep(currentConfigs.value);
   });
 
-  /*
-    Check if any of the config fields are empty
-  */
+  // Check if custom mail config is enabled
+  const isCustomMailConfigEnabled =
+    updatedConfigs?.mailConfigs.fields.mailer_use_custom_configs;
 
-  const isFieldEmpty = (field: string) => field.trim() === '';
+  // Extract the mail config fields (excluding the custom mail config fields)
+  const mailConfigFields = Object.fromEntries(
+    Object.entries(updatedConfigs?.mailConfigs.fields ?? {}).filter(([key]) => {
+      if (isCustomMailConfigEnabled) {
+        return MAIL_CONFIGS.some(
+          (x) =>
+            x.key === key &&
+            key !== 'mailer_smtp_url' &&
+            key !== 'mailer_smtp_enabled'
+        );
+      } else
+        return MAIL_CONFIGS.some(
+          (x) => x.key === key && key !== 'mailer_smtp_enabled'
+        );
+    })
+  );
 
-  const AreAnyConfigFieldsEmpty = (config: ServerConfigs): boolean => {
-    const sections: Array<ConfigSection> = [
-      config.providers.github,
-      config.providers.google,
-      config.providers.microsoft,
-      config.mailConfigs,
-    ];
-
-    return sections.some(
-      (section) =>
-        section.enabled && Object.values(section.fields).some(isFieldEmpty)
-    );
-  };
+  // Extract the custom mail config fields
+  const customMailConfigFields = Object.fromEntries(
+    Object.entries(updatedConfigs?.mailConfigs.fields ?? {}).filter(([key]) =>
+      CUSTOM_MAIL_CONFIGS.some((x) => x.key === key)
+    )
+  );
 
   // Transforming the working configs back into the format required by the mutations
   const transformInfraConfigs = () => {
@@ -174,7 +269,22 @@ export function useConfigHandler(updatedConfigs?: ServerConfigs) {
       {
         config: MAIL_CONFIGS,
         enabled: updatedConfigs?.mailConfigs.enabled,
-        fields: updatedConfigs?.mailConfigs.fields,
+        fields: mailConfigFields,
+      },
+      {
+        config: CUSTOM_MAIL_CONFIGS,
+        enabled: isCustomMailConfigEnabled,
+        fields: customMailConfigFields,
+      },
+      {
+        config: MOCK_SERVER_CONFIGS,
+        enabled: true,
+        fields: updatedConfigs?.mockServerConfigs?.fields ?? {},
+      },
+      {
+        config: PROXY_URL_CONFIGS,
+        enabled: true,
+        fields: updatedConfigs?.proxyUrlConfigs?.fields,
       },
     ];
 
@@ -182,9 +292,16 @@ export function useConfigHandler(updatedConfigs?: ServerConfigs) {
 
     updatedWorkingConfigs.forEach(({ config, enabled, fields }) => {
       config.forEach(({ name, key }) => {
-        if (enabled && fields) {
+        if (name === 'MAILER_SMTP_ENABLE') return;
+        else if (isCustomMailConfigEnabled && name === 'MAILER_SMTP_URL')
+          return;
+        else if (enabled && fields) {
           const value =
             typeof fields === 'string' ? fields : String(fields[key]);
+          // BE rejects empty PROXY_APP_URL and would fail the whole batch.
+          // The form-level guard already blocks the save, but skip here too
+          // so a stray empty value can't blackhole unrelated settings.
+          if (name === InfraConfigEnum.ProxyAppUrl && !value.trim()) return;
           transformedConfigs.push({ name, value });
         }
       });
@@ -239,7 +356,7 @@ export function useConfigHandler(updatedConfigs?: ServerConfigs) {
       },
       {
         provider: AuthProvider.Email,
-        status: updatedConfigs?.mailConfigs.enabled
+        status: updatedConfigs?.mailConfigs.fields.email_auth
           ? ServiceStatus.Enable
           : ServiceStatus.Disable,
       },
@@ -281,6 +398,7 @@ export function useConfigHandler(updatedConfigs?: ServerConfigs) {
       'configs.reset.failure'
     );
 
+  // Toggle Data Sharing
   const updateDataSharingConfigs = (
     toggleDataSharingMutation: UseMutationResponse<ToggleAnalyticsCollectionMutation>
   ) =>
@@ -294,17 +412,172 @@ export function useConfigHandler(updatedConfigs?: ServerConfigs) {
       'configs.data_sharing.update_failure'
     );
 
+  // Toggle SMTP
+  const toggleSMTPConfigs = (
+    toggleSMTP: UseMutationResponse<ToggleSmtpMutation>
+  ) =>
+    executeMutation(
+      toggleSMTP,
+      {
+        status: updatedConfigs?.mailConfigs.enabled
+          ? ServiceStatus.Enable
+          : ServiceStatus.Disable,
+      },
+      'configs.mail_configs.toggle_failure'
+    );
+
+  // Toggle User History Store
+  const toggleUserHistoryStore = (
+    toggleUserHistoryStore: UseMutationResponse<ToggleUserHistoryStoreMutation>
+  ) =>
+    executeMutation(
+      toggleUserHistoryStore,
+      {
+        status: updatedConfigs?.historyConfig.enabled
+          ? ServiceStatus.Enable
+          : ServiceStatus.Disable,
+      },
+      'configs.user_history_store.toggle_failure'
+    );
+
+  const updateRateLimitConfigs = (
+    updateRateLimitMutation: UseMutationResponse<UpdateInfraConfigsMutation>
+  ) => {
+    if (!updatedConfigs?.rateLimitConfigs) {
+      toast.error(t('configs.rate_limit.input_validation_error'));
+      return false;
+    }
+
+    const rateLimitTtl = String(
+      updatedConfigs?.rateLimitConfigs.fields.rate_limit_ttl
+    );
+    const rateLimitMax = String(
+      updatedConfigs?.rateLimitConfigs.fields.rate_limit_max
+    );
+
+    if (isFieldEmpty(rateLimitTtl) || isFieldEmpty(rateLimitMax)) {
+      toast.error(t('configs.rate_limit.input_validation_error'));
+      return false;
+    }
+
+    const rateLimitConfigs: InfraConfigArgs[] = [
+      {
+        name: InfraConfigEnum.RateLimitTtl,
+        value: String(rateLimitTtl),
+      },
+      {
+        name: InfraConfigEnum.RateLimitMax,
+        value: String(rateLimitMax),
+      },
+    ];
+
+    return executeMutation(
+      updateRateLimitMutation,
+      {
+        infraConfigs: rateLimitConfigs,
+      },
+      'configs.rate_limit.update_failure'
+    );
+  };
+
+  const updateAuthTokenConfigs = (
+    updateAuthTokenMutation: UseMutationResponse<UpdateInfraConfigsMutation>
+  ) => {
+    if (!updatedConfigs?.tokenConfigs) {
+      toast.error(t('configs.auth_providers.token.update_failure'));
+      return false;
+    }
+
+    const jwtSecret = String(updatedConfigs?.tokenConfigs.fields.jwt_secret);
+    const tokenSaltComplexity = String(
+      updatedConfigs?.tokenConfigs.fields.token_salt_complexity
+    );
+    const magicLinkTokenValidity = String(
+      updatedConfigs?.tokenConfigs.fields.magic_link_token_validity
+    );
+    const refreshTokenValidity = String(
+      updatedConfigs?.tokenConfigs.fields.refresh_token_validity
+    );
+    const accessTokenValidity = String(
+      updatedConfigs?.tokenConfigs.fields.access_token_validity
+    );
+    const sessionSecret = String(
+      updatedConfigs?.tokenConfigs.fields.session_secret
+    );
+    const sessionCookieName = String(
+      updatedConfigs?.tokenConfigs.fields.session_cookie_name || ''
+    );
+    // Keep save-time toast behavior aligned with proactive validation.
+    if (sessionCookieName && !isValidSessionCookieName(sessionCookieName)) {
+      toast.error(t('configs.auth_providers.token.session_cookie_name_invalid'));
+      return false;
+    }
+    if (
+      isFieldEmpty(jwtSecret) ||
+      isFieldEmpty(tokenSaltComplexity) ||
+      isFieldEmpty(magicLinkTokenValidity) ||
+      isFieldEmpty(refreshTokenValidity) ||
+      isFieldEmpty(accessTokenValidity) ||
+      isFieldEmpty(sessionSecret)
+    ) {
+      toast.error(t('configs.auth_providers.token.update_failure'));
+      return false;
+    }
+
+    const authTokenConfigs: InfraConfigArgs[] = [
+      {
+        name: InfraConfigEnum.JwtSecret,
+        value: jwtSecret,
+      },
+      {
+        name: InfraConfigEnum.TokenSaltComplexity,
+        value: tokenSaltComplexity,
+      },
+      {
+        name: InfraConfigEnum.MagicLinkTokenValidity,
+        value: magicLinkTokenValidity,
+      },
+      {
+        name: InfraConfigEnum.RefreshTokenValidity,
+        value: refreshTokenValidity,
+      },
+      {
+        name: InfraConfigEnum.AccessTokenValidity,
+        value: accessTokenValidity,
+      },
+      {
+        name: InfraConfigEnum.SessionSecret,
+        value: sessionSecret,
+      },
+      {
+        name: InfraConfigEnum.SessionCookieName,
+        value: sessionCookieName,
+      },
+    ];
+
+    return executeMutation(
+      updateAuthTokenMutation,
+      {
+        infraConfigs: authTokenConfigs,
+      },
+      'configs.auth_providers.token.update_failure'
+    );
+  };
+
   return {
     currentConfigs,
     workingConfigs,
     updateAuthProvider,
     updateDataSharingConfigs,
+    toggleSMTPConfigs,
+    toggleUserHistoryStore,
+    updateRateLimitConfigs,
+    updateAuthTokenConfigs,
     updateInfraConfigs,
     resetInfraConfigs,
     fetchingInfraConfigs,
     fetchingAllowedAuthProviders,
     infraConfigsError,
     allowedAuthProvidersError,
-    AreAnyConfigFieldsEmpty,
   };
 }

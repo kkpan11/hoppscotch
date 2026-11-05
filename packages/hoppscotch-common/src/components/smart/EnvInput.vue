@@ -5,11 +5,11 @@
     >
       <input
         v-if="isSecret"
-        id="secret"
+        :id="`secret-${uniqueID()}`"
         v-model="secretText"
         name="secret"
-        :placeholder="t('environment.secret_value')"
-        class="flex flex-1 bg-transparent px-4"
+        :placeholder="placeholder"
+        class="flex flex-1 bg-transparent pl-4"
         :class="styles"
         type="password"
       />
@@ -17,7 +17,7 @@
         v-else
         ref="editor"
         :placeholder="placeholder"
-        class="flex flex-1"
+        class="flex flex-1 truncate relative"
         :class="styles"
         @click="emit('click', $event)"
         @keydown="handleKeystroke"
@@ -73,13 +73,22 @@ import {
   keymap,
   tooltips,
 } from "@codemirror/view"
-import { EditorSelection, EditorState, Extension } from "@codemirror/state"
+import {
+  Compartment,
+  EditorSelection,
+  EditorState,
+  Extension,
+} from "@codemirror/state"
 import { clone } from "lodash-es"
 import { history, historyKeymap } from "@codemirror/commands"
 import { inputTheme } from "~/helpers/editor/themes/baseTheme"
 import { HoppReactiveEnvPlugin } from "~/helpers/editor/extensions/HoppEnvironment"
+import { HoppPredefinedVariablesPlugin } from "~/helpers/editor/extensions/HoppPredefinedVariables"
 import { useReadonlyStream } from "@composables/stream"
-import { AggregateEnvironment, aggregateEnvs$ } from "~/newstore/environments"
+import {
+  AggregateEnvironment,
+  aggregateEnvsWithCurrentValue$,
+} from "~/newstore/environments"
 import { platform } from "~/platform"
 import { onClickOutside, useDebounceFn } from "@vueuse/core"
 import { InspectorResult } from "~/services/inspection"
@@ -89,8 +98,11 @@ import IconEye from "~icons/lucide/eye"
 import IconEyeoff from "~icons/lucide/eye-off"
 import { CompletionContext, autocompletion } from "@codemirror/autocomplete"
 import { useService } from "dioc/vue"
-import { RESTTabService } from "~/services/tab/rest"
+import { WorkspaceTabsService } from "~/services/tab/workspace-tabs"
 import { syntaxTree } from "@codemirror/language"
+import { uniqueID } from "~/helpers/utils/uniqueID"
+import { getEffectiveVariablesForRequest } from "~/helpers/utils/environments"
+import { maskSecretValue } from "~/helpers/utils/secretMask"
 
 const t = useI18n()
 
@@ -103,12 +115,14 @@ const props = withDefaults(
     focus?: boolean
     selectTextOnMount?: boolean
     environmentHighlights?: boolean
+    predefinedVariablesHighlights?: boolean
     readonly?: boolean
     autoCompleteSource?: string[]
     inspectionResults?: InspectorResult[] | undefined
     contextMenuEnabled?: boolean
     secret?: boolean
     autoCompleteEnv?: boolean
+    autoCompleteEnvSource?: AggregateEnvironment[] | null
   }>(),
   {
     modelValue: "",
@@ -118,12 +132,14 @@ const props = withDefaults(
     focus: false,
     readonly: false,
     environmentHighlights: true,
+    predefinedVariablesHighlights: true,
     autoCompleteSource: undefined,
     inspectionResult: undefined,
     inspectionResults: undefined,
     contextMenuEnabled: true,
     secret: false,
-    autoCompleteEnvSource: false,
+    autoCompleteEnv: false,
+    autoCompleteEnvSource: null,
   }
 )
 
@@ -153,12 +169,28 @@ const isSecret = ref(props.secret)
 
 const secretText = ref(props.modelValue)
 
+// Compartment to store the readOnly state of the editor
+const readOnly = new Compartment()
+
 watch(
   () => secretText.value,
   (newVal) => {
     if (isSecret.value) {
       updateModelValue(newVal)
     }
+  }
+)
+
+//update secretText when modelValue changes
+watch(
+  () => props.modelValue,
+  (newVal) => {
+    if (secretText.value !== newVal) {
+      secretText.value = newVal
+    }
+  },
+  {
+    immediate: true,
   }
 )
 
@@ -353,63 +385,115 @@ watch(
 let clipboardEv: ClipboardEvent | null = null
 let pastedValue: string | null = null
 
-const aggregateEnvs = useReadonlyStream(aggregateEnvs$, []) as Ref<
-  AggregateEnvironment[]
->
+const aggregateEnvs = useReadonlyStream(
+  aggregateEnvsWithCurrentValue$,
+  []
+) as Ref<AggregateEnvironment[]>
 
-const tabs = useService(RESTTabService)
+const tabs = useService(WorkspaceTabsService)
 
 const envVars = computed(() => {
+  // If envs are passed directly as props, mask secrets and return them.
+  // Keep sourceEnvID: the env tooltip uses it to look up secret/current values
+  // for collection-scoped variables (otherwise they show as "Empty").
+  // An explicitly-passed EMPTY list scopes to nothing (embeds) — only a
+  // missing prop falls back to the global aggregate envs.
   if (props.envs) {
-    return props.envs.map((x) => {
-      const { key, secret } = x
-      const value = secret ? "********" : x.value
-      const sourceEnv = "sourceEnv" in x ? x.sourceEnv : null
-      return {
+    return props.envs.map(
+      ({
         key,
-        value,
-        sourceEnv,
+        currentValue,
+        initialValue,
         secret,
-      }
-    })
+        sourceEnv,
+        sourceEnvID,
+      }) => ({
+        key,
+        currentValue: secret ? maskSecretValue(currentValue) : currentValue,
+        initialValue: secret ? maskSecretValue(initialValue) : initialValue,
+        sourceEnv: sourceEnv ?? "",
+        sourceEnvID,
+        secret,
+      })
+    )
   }
-  return [
-    ...tabs.currentActiveTab.value.document.request.requestVariables.map(
-      ({ active, key, value }) =>
-        active
-          ? {
-              key,
-              value,
-              sourceEnv: "RequestVariable",
-              secret: false,
-            }
-          : ({} as AggregateEnvironment)
-    ),
-    ...aggregateEnvs.value,
-  ]
+
+  const currentTab = tabs.currentActiveTab.value
+  const { document } = currentTab
+  const isRequest = document.type === "request"
+  const isRESTExample = document.type === "example-response"
+  const isGQLExample = document.type === "gql-example-response"
+  const isExample = isRESTExample || isGQLExample
+  const isGQLRequest = document.type === "gql-request"
+
+  const requestVariables = isRequest
+    ? document.request.requestVariables
+    : isRESTExample
+      ? document.response.originalRequest.requestVariables
+      : []
+
+  const inheritedVariables =
+    isRequest || isExample || isGQLRequest
+      ? document.inheritedProperties?.variables
+      : []
+
+  // Merge in precedence order (request → collection → environment).
+  // Collection secrets stay masked here (showSecretCollectionValues = false).
+  return getEffectiveVariablesForRequest(
+    requestVariables,
+    inheritedVariables,
+    aggregateEnvs.value,
+    false
+  )
 })
 
 function envAutoCompletion(context: CompletionContext) {
-  const options = (envVars.value ?? [])
-    .map((env) => ({
-      label: env?.key ? `<<${env.key}>>` : "",
-      info: env?.value ?? "",
-      apply: env?.key ? `<<${env.key}>>` : "",
-    }))
-    .filter((x) => x)
-
   const nodeBefore = syntaxTree(context.state).resolveInner(context.pos, -1)
   const textBefore = context.state.sliceDoc(nodeBefore.from, context.pos)
-  const tagBefore = /<<\w*$/.exec(textBefore)
+  const tagBefore = /<<\$?[A-Za-z0-9_.-]*$/.exec(textBefore) // Update regex to match <<$ as well
+
   if (!tagBefore && !context.explicit) return null
+
+  // Check if there's already a closing ">>" after the cursor
+  const textAfter = context.state.sliceDoc(context.pos, context.pos + 2)
+  const hasClosingBrackets = textAfter === ">>"
+
+  const options = (props.autoCompleteEnvSource ?? envVars.value ?? [])
+    .map((env) => {
+      const envKey = env?.key
+      if (!envKey) return null
+
+      // If closing brackets already exist, don't include them in the completion
+      const completionText = hasClosingBrackets
+        ? `<<${envKey}`
+        : `<<${envKey}>>`
+
+      return {
+        label: `<<${envKey}>>`,
+        // Mask secrets here too: the computed branch (URL/Body, no `:envs`)
+        // carries raw secret values, so an unmasked `info` would leak them in
+        // the completion panel. Display shows `currentValue` as-is (empty stays
+        // empty); the current→initial fallback happens only at execution time.
+        info: env?.secret
+          ? maskSecretValue(env.currentValue)
+          : (env?.currentValue ?? ""),
+        apply: completionText,
+      }
+    })
+    .filter(
+      (option): option is { label: string; info: string; apply: string } =>
+        option !== null
+    )
+
   return {
     from: tagBefore ? nodeBefore.from + tagBefore.index : context.pos,
     options: options,
-    validFor: /^(<<\w*)?$/,
+    validFor: /^(<<\$?[A-Za-z0-9_.-]*)?$/,
   }
 }
 
 const envTooltipPlugin = new HoppReactiveEnvPlugin(envVars, view)
+const predefinedVariablePlugin = new HoppPredefinedVariablesPlugin()
 
 function handleTextSelection() {
   const selection = view.value?.state.selection.main
@@ -465,16 +549,14 @@ const initView = (el: any) => {
 }
 
 const getExtensions = (readonly: boolean): Extension => {
-  const extensions: Extension = [
-    EditorView.contentAttributes.of({ "aria-label": props.placeholder }),
-    EditorView.contentAttributes.of({ "data-enable-grammarly": "false" }),
+  const readOnlyConfigs = [
     EditorView.updateListener.of((update) => {
       if (readonly) {
         update.view.contentDOM.inputMode = "none"
+        update.view.contentDOM.contentEditable = "false"
       }
     }),
     EditorState.changeFilter.of(() => !readonly),
-    inputTheme,
     readonly
       ? EditorView.theme({
           ".cm-content": {
@@ -485,11 +567,19 @@ const getExtensions = (readonly: boolean): Extension => {
           },
         })
       : EditorView.theme({}),
+  ]
+
+  const extensions: Extension = [
+    EditorView.contentAttributes.of({ "aria-label": props.placeholder }),
+    EditorView.contentAttributes.of({ "data-enable-grammarly": "false" }),
+    inputTheme,
+    readOnly.of(readOnlyConfigs),
     tooltips({
       parent: document.body,
       position: "absolute",
     }),
     props.environmentHighlights ? envTooltipPlugin : [],
+    props.predefinedVariablesHighlights ? predefinedVariablePlugin : [],
     placeholderExt(props.placeholder),
     EditorView.domEventHandlers({
       paste(ev) {
@@ -510,12 +600,15 @@ const getExtensions = (readonly: boolean): Extension => {
       ? autocompletion({
           activateOnTyping: true,
           override: [envAutoCompletion],
+          tooltipClass: () => "tooltip-autocomplete",
         })
       : [],
+
     ViewPlugin.fromClass(
       class {
         update(update: ViewUpdate) {
-          if (readonly) return
+          // since the readonly prop is reactive, we need to check if it has changed
+          if (props.readonly) return
 
           if (update.docChanged) {
             const prevValue = clone(cachedValue.value)
@@ -578,6 +671,18 @@ const triggerTextSelection = () => {
     })
   })
 }
+
+/**
+ * Focuses the input editor
+ */
+const focusInput = () => {
+  view.value?.focus()
+}
+
+defineExpose({
+  focus: focusInput,
+})
+
 onMounted(() => {
   if (editor.value) {
     if (!view.value) initView(editor.value)
@@ -596,7 +701,58 @@ watch(editor, () => {
     view.value = undefined
   }
 })
+
+/**
+ * Watch for changes in the readonly prop
+ * and update the editor state accordingly
+ */
+watch(
+  () => props.readonly,
+  (isReadOnly) => {
+    if (isReadOnly) {
+      view.value?.dispatch({
+        effects: readOnly.reconfigure([
+          EditorView.theme({
+            ".cm-content": {
+              caretColor: "var(--secondary-dark-color)",
+              color: "var(--secondary-dark-color)",
+              backgroundColor: "var(--divider-color)",
+              opacity: 0.25,
+            },
+          }),
+          EditorState.changeFilter.of(() => false),
+          EditorState.readOnly.of(true),
+        ]),
+      })
+
+      //change input mode and contenteditable to false to prevent keyboard input
+      view.value?.contentDOM.setAttribute("inputmode", "none")
+      view.value?.contentDOM.setAttribute("contenteditable", "false")
+    } else {
+      view.value?.dispatch({
+        effects: readOnly.reconfigure([
+          EditorView.theme({}),
+          EditorState.changeFilter.of(() => true),
+          EditorState.readOnly.of(false),
+        ]),
+      })
+
+      //change input mode and contenteditable to true to allow keyboard input
+      view.value?.contentDOM.setAttribute("inputmode", "text")
+      view.value?.contentDOM.setAttribute("contenteditable", "true")
+    }
+  },
+  {
+    immediate: true,
+  }
+)
 </script>
+
+<style lang="scss">
+.tooltip-autocomplete {
+  @apply z-[1001] #{!important};
+}
+</style>
 
 <style lang="scss" scoped>
 .autocomplete-wrapper {
@@ -605,6 +761,11 @@ watch(editor, () => {
   @apply flex-1;
   @apply flex-shrink-0;
   @apply whitespace-nowrap py-4;
+
+  // Hide horizontal scrollbar for CodeMirror in Firefox (Chrome is handled by global ::-webkit-scrollbar { h-0 })
+  :deep(.cm-scroller) {
+    scrollbar-width: none;
+  }
 
   .suggestions {
     @apply absolute;

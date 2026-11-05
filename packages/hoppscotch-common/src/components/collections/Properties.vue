@@ -4,6 +4,7 @@
     dialog
     :title="t('collection.properties')"
     :full-width-body="true"
+    styles="sm:max-w-5xl lg:max-w-6xl xl:max-w-7xl 2xl:max-w-[80vw]"
     @close="hideModal"
   >
     <template #body>
@@ -12,10 +13,16 @@
         styles="sticky overflow-x-auto flex-shrink-0 bg-primary top-0 z-10 !-py-4"
         render-inactive-tabs
       >
-        <HoppSmartTab :id="'headers'" :label="`${t('tab.headers')}`">
+        <HoppSmartTab
+          v-if="hasTeamWriteAccess"
+          id="headers"
+          :label="`${t('tab.headers')}`"
+        >
           <HttpHeaders
             v-model="editableCollection"
             :is-collection-property="true"
+            :envs="envs"
+            @change-tab="changeOptionTab"
           />
           <div
             class="bg-bannerInfo px-4 py-2 flex items-center sticky bottom-0"
@@ -24,15 +31,18 @@
             {{ t("helpers.collection_properties_header") }}
           </div>
         </HoppSmartTab>
+
         <HoppSmartTab
-          :id="'authorization'"
+          v-if="hasTeamWriteAccess"
+          id="authorization"
           :label="`${t('tab.authorization')}`"
         >
           <HttpAuthorization
             v-model="editableCollection.auth"
             :is-collection-property="true"
-            :is-root-collection="editingProperties?.isRootCollection"
-            :inherited-properties="editingProperties?.inheritedProperties"
+            :is-root-collection="editingProperties.isRootCollection"
+            :inherited-properties="editingProperties.inheritedProperties"
+            :envs="envs"
             :source="source"
           />
           <div
@@ -42,69 +52,240 @@
             {{ t("helpers.collection_properties_authorization") }}
           </div>
         </HoppSmartTab>
+
+        <!-- Collection variables is only available for REST collections for now -->
+        <HoppSmartTab
+          v-if="source === 'REST'"
+          id="variables"
+          :label="`${t('tab.variables')}`"
+        >
+          <CollectionsVariables
+            v-model="editableCollection.variables"
+            :inherited-properties="editingProperties.inheritedProperties"
+            :has-team-write-access="hasTeamWriteAccess"
+            :collection-store-key="collectionStoreKey"
+          />
+        </HoppSmartTab>
+
+        <HoppSmartTab
+          v-if="source === 'REST'"
+          id="scripts"
+          :label="`${t('tab.scripts')}`"
+        >
+          <div class="flex flex-col flex-1">
+            <HoppSmartTabs
+              v-model="activeScriptsTab"
+              styles="sticky overflow-x-auto flex-shrink-0 bg-primary top-0 z-10"
+              render-inactive-tabs
+            >
+              <HoppSmartTab
+                id="pre-request"
+                :label="`${t('tab.pre_request_script')}`"
+                :indicator="
+                  hasActualScript(editableCollection.preRequestScript)
+                "
+              >
+                <div class="flex flex-col flex-1">
+                  <div class="h-64 overflow-hidden relative">
+                    <MonacoScriptEditor
+                      v-if="
+                        EXPERIMENTAL_SCRIPTING_SANDBOX &&
+                        activeTab === 'scripts' &&
+                        activeScriptsTab === 'pre-request'
+                      "
+                      v-model="editableCollection.preRequestScript"
+                      type="pre-request"
+                      :read-only="!hasTeamWriteAccess"
+                    />
+                    <div
+                      v-else
+                      ref="preRequestEditor"
+                      class="h-full absolute inset-0"
+                    ></div>
+                  </div>
+                </div>
+              </HoppSmartTab>
+
+              <HoppSmartTab
+                id="test-script"
+                :label="`${t('tab.post_request_script')}`"
+                :indicator="hasActualScript(editableCollection.testScript)"
+              >
+                <div class="flex flex-col flex-1">
+                  <div
+                    class="h-64 border-b border-dividerLight overflow-hidden relative"
+                  >
+                    <MonacoScriptEditor
+                      v-if="
+                        EXPERIMENTAL_SCRIPTING_SANDBOX &&
+                        activeTab === 'scripts' &&
+                        activeScriptsTab === 'test-script'
+                      "
+                      v-model="editableCollection.testScript"
+                      type="post-request"
+                      :read-only="!hasTeamWriteAccess"
+                    />
+                    <div
+                      v-else
+                      ref="testScriptEditor"
+                      class="h-full absolute inset-0"
+                    ></div>
+                  </div>
+                </div>
+              </HoppSmartTab>
+            </HoppSmartTabs>
+
+            <div
+              class="bg-bannerInfo px-4 py-2 flex items-center sticky bottom-0"
+            >
+              <icon-lucide-info class="svg-icons mr-2" />
+              {{ t("helpers.collection_properties_scripts") }}
+            </div>
+          </div>
+        </HoppSmartTab>
+
+        <HoppSmartTab
+          v-if="showDetails"
+          :id="'details'"
+          :label="t('collection.details')"
+        >
+          <div
+            class="flex flex-shrink-0 items-center justify-between border-b border-dividerLight bg-primary pl-4"
+          >
+            <span>{{ t("collection_runner.collection_id") }}</span>
+
+            <HoppButtonSecondary
+              v-tippy="{ theme: 'tooltip' }"
+              to="https://docs.hoppscotch.io/documentation/clients/cli/overview#running-collections-present-on-the-api-client"
+              blank
+              :title="t('app.wiki')"
+              :icon="IconHelpCircle"
+            />
+          </div>
+
+          <div class="p-4">
+            <div
+              class="flex items-center justify-between py-2 px-4 rounded-md bg-primaryLight select-text"
+            >
+              <div class="text-secondaryDark">
+                {{ editingProperties.path }}
+              </div>
+
+              <HoppButtonSecondary
+                filled
+                :icon="copyIcon"
+                @click="copyCollectionID"
+              />
+            </div>
+          </div>
+
+          <div
+            class="bg-bannerInfo px-4 py-2 flex items-center sticky bottom-0"
+          >
+            <icon-lucide-info class="svg-icons mr-2" />
+            {{ t("collection_runner.cli_collection_id_description") }}
+          </div>
+        </HoppSmartTab>
       </HoppSmartTabs>
     </template>
     <template #footer>
-      <span class="flex space-x-2">
+      <div class="flex gap-x-2">
         <HoppButtonPrimary
+          v-if="activeTabIsDetails"
+          :label="t('action.copy')"
+          :icon="copyIcon"
+          outline
+          filled
+          @click="copyCollectionID"
+        />
+        <HoppButtonPrimary
+          v-else
           :label="t('action.save')"
           :loading="loadingState"
           outline
           @click="saveEditedCollection"
         />
+
         <HoppButtonSecondary
-          :label="t('action.cancel')"
+          :label="activeTabIsDetails ? t('action.close') : t('action.cancel')"
           outline
           filled
           @click="hideModal"
         />
-      </span>
+      </div>
     </template>
   </HoppSmartModal>
 </template>
 
 <script setup lang="ts">
-import { useI18n } from "@composables/i18n"
-import {
-  GQLHeader,
-  HoppCollection,
-  HoppGQLAuth,
-  HoppRESTAuth,
-  HoppRESTHeaders,
-} from "@hoppscotch/data"
-import { useVModel } from "@vueuse/core"
-import { useService } from "dioc/vue"
+import { computed, reactive, ref, watch } from "vue"
+import { refAutoReset, useVModel } from "@vueuse/core"
 import { clone } from "lodash-es"
-import { ref, watch } from "vue"
+import { useCodemirror } from "@composables/codemirror"
+import { useI18n } from "@composables/i18n"
+import { useSetting } from "~/composables/settings"
+import { useToast } from "~/composables/toast"
+import preRequestCompleter from "~/helpers/editor/completion/preRequest"
+import testScriptCompleter from "~/helpers/editor/completion/testScript"
+import preRequestLinter from "~/helpers/editor/linting/preRequest"
+import testScriptLinter from "~/helpers/editor/linting/testScript"
+import { copyToClipboard } from "~/helpers/utils/clipboard"
+import { useService } from "dioc/vue"
+import { useReadonlyStream } from "@composables/stream"
+import {
+  aggregateEnvsWithCurrentValue$,
+  getAggregateEnvsWithCurrentValue,
+} from "~/newstore/environments"
+import { transformInheritedCollectionVariablesToAggregateEnv } from "~/helpers/utils/inheritedCollectionVarTransformer"
 
+import {
+  HoppCollection,
+  HoppCollectionVariable,
+  HoppRESTAuth,
+  HoppGQLAuth,
+  HoppRESTHeaders,
+  GQLHeader,
+} from "@hoppscotch/data"
+import { hasActualScript } from "@hoppscotch/js-sandbox/scripting"
 import { HoppInheritedProperty } from "~/helpers/types/HoppInheritedProperties"
 import { PersistenceService } from "~/services/persistence"
 
+import IconCheck from "~icons/lucide/check"
+import IconCopy from "~icons/lucide/copy"
+import IconHelpCircle from "~icons/lucide/help-circle"
+import { RESTOptionTabs } from "../http/RequestOptions.vue"
+
 const persistenceService = useService(PersistenceService)
 const t = useI18n()
+const toast = useToast()
 
 export type EditingProperties = {
   collection: Partial<HoppCollection> | null
   isRootCollection: boolean
   path: string
   inheritedProperties?: HoppInheritedProperty
+  // Key the collection's secret/current values are stored under, computed
+  // authoritatively by `editProperties` (team → `id`, personal → `_ref_id`).
+  collectionStoreKey?: string
 }
-
 type HoppCollectionAuth = HoppRESTAuth | HoppGQLAuth
 type HoppCollectionHeaders = HoppRESTHeaders | GQLHeader[]
 
 const props = withDefaults(
   defineProps<{
     show: boolean
-    loadingState: boolean
-    editingProperties: EditingProperties | null
+    loadingState?: boolean
+    editingProperties: EditingProperties
     source: "REST" | "GraphQL"
     modelValue: string
+    showDetails?: boolean
+    hasTeamWriteAccess?: boolean
   }>(),
   {
     show: false,
     loadingState: false,
-    editingProperties: null,
+    showDetails: false,
+    hasTeamWriteAccess: true,
   }
 )
 
@@ -120,78 +301,211 @@ const emit = defineEmits<{
 const editableCollection = ref<{
   headers: HoppCollectionHeaders
   auth: HoppCollectionAuth
+  variables: HoppCollectionVariable[]
+  preRequestScript: string
+  testScript: string
 }>({
   headers: [],
-  auth: {
-    authType: "inherit",
-    authActive: false,
+  auth: { authType: "inherit", authActive: false },
+  variables: [],
+  preRequestScript: "",
+  testScript: "",
+})
+
+const copyIcon = refAutoReset<typeof IconCopy | typeof IconCheck>(
+  IconCopy,
+  1000
+)
+const activeTab = useVModel(props, "modelValue", emit)
+const activeScriptsTab = ref<"pre-request" | "test-script">("pre-request")
+
+const aggregateEnvs = useReadonlyStream(
+  aggregateEnvsWithCurrentValue$,
+  getAggregateEnvsWithCurrentValue()
+)
+
+// Surfaces the prop's already-keyed store ID so `envs` can pass it as
+// `sourceEnvID` — lets the env tooltip resolve the collection's own secrets.
+const collectionStoreKey = computed(
+  () => props.editingProperties.collectionStoreKey ?? ""
+)
+
+const envs = computed(() => {
+  const collectionVars = editableCollection.value.variables.map((v) => ({
+    key: v.key,
+    currentValue: v.currentValue,
+    initialValue: v.initialValue,
+    sourceEnv: "CollectionVariable",
+    sourceEnvID: collectionStoreKey.value,
+    secret: v.secret,
+  }))
+
+  const inheritedVars = transformInheritedCollectionVariablesToAggregateEnv(
+    props.editingProperties.inheritedProperties?.variables ?? [],
+    true
+  )
+
+  // Note: request-level variables are intentionally NOT merged here since
+  // there is no single active request in scope when editing collection-level
+  // properties.
+  return [...collectionVars, ...inheritedVars, ...aggregateEnvs.value]
+})
+
+const activeTabIsDetails = computed(() => activeTab.value === "details")
+
+const EXPERIMENTAL_SCRIPTING_SANDBOX = useSetting(
+  "EXPERIMENTAL_SCRIPTING_SANDBOX"
+)
+
+const preRequestEditor = ref<any | null>(null)
+const testScriptEditor = ref<any | null>(null)
+
+const preRequestScriptModel = computed({
+  get: () => editableCollection.value.preRequestScript,
+  set: (val: string) => {
+    editableCollection.value.preRequestScript = val
   },
 })
 
-watch(
-  editableCollection,
-  (updatedEditableCollection) => {
-    if (props.show && props.editingProperties) {
-      const unsavedCollectionProperties: EditingProperties = {
-        collection: updatedEditableCollection,
-        isRootCollection: props.editingProperties?.isRootCollection ?? false,
-        path: props.editingProperties?.path,
-        inheritedProperties: props.editingProperties?.inheritedProperties,
-      }
-      persistenceService.setLocalConfig(
-        "unsaved_collection_properties",
-        JSON.stringify(unsavedCollectionProperties)
-      )
-    }
+const testScriptModel = computed({
+  get: () => editableCollection.value.testScript,
+  set: (val: string) => {
+    editableCollection.value.testScript = val
   },
-  {
-    deep: true,
-  }
+})
+
+useCodemirror(
+  preRequestEditor,
+  preRequestScriptModel,
+  reactive({
+    extendedEditorConfig: {
+      mode: "application/javascript",
+      lineWrapping: true,
+      placeholder: `${t("preRequest.javascript_code")}`,
+      readOnly: !props.hasTeamWriteAccess,
+    },
+    linter: preRequestLinter,
+    completer: preRequestCompleter,
+    environmentHighlights: false,
+    contextMenuEnabled: false,
+  })
 )
 
-const activeTab = useVModel(props, "modelValue", emit)
-
-watch(
-  () => props.show,
-  (show) => {
-    if (show && props.editingProperties?.collection) {
-      editableCollection.value.auth = clone(
-        props.editingProperties.collection.auth as HoppCollectionAuth
-      )
-      editableCollection.value.headers = clone(
-        props.editingProperties.collection.headers as HoppCollectionHeaders
-      )
-    } else {
-      editableCollection.value = {
-        headers: [],
-        auth: {
-          authType: "inherit",
-          authActive: false,
-        },
-      }
-
-      persistenceService.removeLocalConfig("unsaved_collection_properties")
-    }
-  }
+useCodemirror(
+  testScriptEditor,
+  testScriptModel,
+  reactive({
+    extendedEditorConfig: {
+      mode: "application/javascript",
+      lineWrapping: true,
+      placeholder: `${t("test.javascript_code")}`,
+      readOnly: !props.hasTeamWriteAccess,
+    },
+    linter: testScriptLinter,
+    completer: testScriptCompleter,
+    environmentHighlights: false,
+    contextMenuEnabled: false,
+  })
 )
 
-const saveEditedCollection = () => {
+const persistUnsavedChanges = async (
+  updated: typeof editableCollection.value
+) => {
+  if (!props.show) return
+  await persistenceService.setLocalConfig(
+    "unsaved_collection_properties",
+    JSON.stringify({
+      collection: updated,
+      isRootCollection: props.editingProperties.isRootCollection ?? false,
+      path: props.editingProperties.path,
+      inheritedProperties: props.editingProperties.inheritedProperties,
+      collectionStoreKey: props.editingProperties.collectionStoreKey,
+    })
+  )
+}
+
+const handleModalVisibility = async (show: boolean) => {
+  enforceTabAccessRules()
+
+  if (show && props.editingProperties.collection) {
+    loadEditableCollection()
+  } else {
+    resetEditableCollection()
+    await persistenceService.removeLocalConfig("unsaved_collection_properties")
+  }
+}
+
+const enforceTabAccessRules = () => {
+  // `Details` tab doesn't exist for personal workspace, hence switching to the `Headers` tab
+  // The modal can appear empty while switching from a team workspace with `Details` as the active tab
+  if (activeTab.value === "details" && !props.showDetails)
+    activeTab.value = "headers"
+  // If the user doesn't have write access to the team, switch to `Variables` tab
+  // when the `Headers` or `Authorization` tab is active
+  if (
+    !props.hasTeamWriteAccess &&
+    ["headers", "authorization"].includes(activeTab.value)
+  )
+    activeTab.value = "variables"
+  // `Scripts` tab only exists for REST collections
+  // Switch to `Variables` tab if scripts tab becomes unavailable
+  if (activeTab.value === "scripts" && props.source !== "REST")
+    activeTab.value = "variables"
+}
+
+const loadEditableCollection = () => {
+  activeScriptsTab.value = "pre-request"
+  editableCollection.value = {
+    auth: clone(props.editingProperties.collection!.auth as HoppCollectionAuth),
+    headers: clone(
+      props.editingProperties.collection!.headers as HoppCollectionHeaders
+    ),
+    variables: clone(props.editingProperties.collection!.variables || []),
+    preRequestScript:
+      props.editingProperties.collection!.preRequestScript || "",
+    testScript: props.editingProperties.collection!.testScript || "",
+  }
+}
+
+const resetEditableCollection = () => {
+  activeScriptsTab.value = "pre-request"
+  editableCollection.value = {
+    headers: [],
+    auth: { authType: "inherit", authActive: false },
+    variables: [],
+    preRequestScript: "",
+    testScript: "",
+  }
+}
+
+const saveEditedCollection = async () => {
   if (!props.editingProperties) return
-  const finalCollection = clone(editableCollection.value)
-  const collection = {
+  emit("set-collection-properties", {
     path: props.editingProperties.path,
     collection: {
       ...props.editingProperties.collection,
-      ...finalCollection,
+      ...clone(editableCollection.value),
     },
     isRootCollection: props.editingProperties.isRootCollection,
-  }
-  emit("set-collection-properties", collection as EditingProperties)
-  persistenceService.removeLocalConfig("unsaved_collection_properties")
+  } as EditingProperties)
+  await persistenceService.removeLocalConfig("unsaved_collection_properties")
 }
 
-const hideModal = () => {
-  persistenceService.removeLocalConfig("unsaved_collection_properties")
+watch(editableCollection, persistUnsavedChanges, { deep: true })
+watch(() => props.show, handleModalVisibility)
+
+const hideModal = async () => {
+  await persistenceService.removeLocalConfig("unsaved_collection_properties")
   emit("hide-modal")
+}
+
+const changeOptionTab = (tab: RESTOptionTabs) => {
+  activeTab.value = tab
+}
+
+const copyCollectionID = () => {
+  copyToClipboard(props.editingProperties.path)
+  copyIcon.value = IconCheck
+  toast.success(t("state.copied_to_clipboard"))
 }
 </script>

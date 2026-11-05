@@ -1,5 +1,10 @@
 <template>
-  <HoppSmartSlideOver :show="show" :title="t('app.shortcuts')" @close="close()">
+  <HoppSmartSlideOver
+    :show="show"
+    :title="t('app.shortcuts')"
+    data-shortcuts-flyout
+    @close="close()"
+  >
     <template #content>
       <div
         class="sticky top-0 z-10 flex flex-shrink-0 flex-col overflow-x-auto bg-primary"
@@ -57,6 +62,7 @@ import { ShortcutDef, getShortcuts } from "~/helpers/shortcuts"
 import MiniSearch from "minisearch"
 import { useI18n } from "@composables/i18n"
 import { groupBy, isEmpty } from "lodash-es"
+import { isActionBound } from "~/helpers/actions"
 
 const t = useI18n()
 
@@ -76,6 +82,15 @@ const minisearch = new MiniSearch({
 
 const shortcuts = getShortcuts(t)
 
+// Hide entries whose action no mounted view handles
+const actionBound = new Map(
+  shortcuts.flatMap((s) =>
+    s.action ? [[s.label, isActionBound(s.action)] as const] : []
+  )
+)
+const isAvailable = (s: { label: string }) =>
+  actionBound.get(s.label)?.value ?? true
+
 onBeforeMount(() => {
   minisearch.addAllAsync(shortcuts)
 })
@@ -89,7 +104,10 @@ const shortcutsResults = computed(() => {
       ? minisearch.search(filterText.value)
       : shortcuts
 
-  return groupBy(results, "section") as Record<string, ShortcutDef[]>
+  return groupBy(results.filter(isAvailable), "section") as Record<
+    string,
+    ShortcutDef[]
+  >
 })
 
 const emit = defineEmits<{

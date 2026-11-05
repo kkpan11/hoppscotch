@@ -1,21 +1,54 @@
+import {
+  CollectionVariable,
+  HoppCollection,
+  HoppCollectionVariable,
+  HoppRESTAuth,
+  HoppRESTHeaders,
+  HoppRESTRequest,
+  makeCollection,
+} from "@hoppscotch/data"
 import * as A from "fp-ts/Array"
 import * as E from "fp-ts/Either"
 import * as TE from "fp-ts/TaskEither"
-import { pipe, flow } from "fp-ts/function"
-import {
-  HoppCollection,
-  makeCollection,
-  translateToNewRequest,
-} from "@hoppscotch/data"
+import { flow, pipe } from "fp-ts/function"
+import { z } from "zod"
+
+import { getI18n } from "~/modules/i18n"
 import { TeamCollection } from "../teams/TeamCollection"
-import { TeamRequest } from "../teams/TeamRequest"
+import { TeamRequest, normalizeTeamRequestBody } from "../teams/TeamRequest"
 import { GQLError, runGQLQuery } from "./GQLClient"
+import { stripCollectionTreeForStore } from "~/helpers/clientLocalVariables"
 import {
   ExportAsJsonDocument,
+  ExportCollectionToJsonDocument,
   GetCollectionChildrenIDsDocument,
   GetCollectionRequestsDocument,
   GetCollectionTitleAndDataDocument,
 } from "./graphql"
+import { stripRefIdReplacer } from "../import-export/export"
+
+type TeamCollectionJSON = {
+  id: string
+  name: string
+  folders: TeamCollectionJSON[]
+  requests: HoppRESTRequest[]
+  data: string | null
+}
+
+export type CollectionDataProps = {
+  auth: HoppRESTAuth
+  headers: HoppRESTHeaders
+  variables: HoppCollectionVariable[]
+  description: string | null
+  preRequestScript: string
+  testScript: string
+  // Stable local-store key, round-tripped via `data._ref_id`. The wire
+  // payload is opaque to the backend, which just echoes it back; the FE
+  // uses it to pair populated secret-store entries to the backend `id`
+  // (personal) or to migrate from `_ref_id` to backend `id` (team
+  // collection import).
+  _ref_id?: string
+}
 
 export const BACKEND_PAGE_SIZE = 10
 
@@ -36,9 +69,12 @@ const getCollectionChildrenIDs = async (collID: string) => {
       return E.left(data.left)
     }
 
-    collsList.push(...data.right.collection!.children.map((x) => x.id))
+    if (!data.right.collection) return E.right([])
 
-    if (data.right.collection!.children.length !== BACKEND_PAGE_SIZE) break
+    const children = data.right.collection.children || []
+    collsList.push(...children.map((x) => x.id))
+
+    if (children.length !== BACKEND_PAGE_SIZE) break
   }
 
   return E.right(collsList)
@@ -65,7 +101,7 @@ const getCollectionRequests = async (collID: string) => {
         (x) =>
           <TeamRequest>{
             id: x.id,
-            request: translateToNewRequest(JSON.parse(x.request)),
+            request: normalizeTeamRequestBody(x.request),
             collectionID: collID,
             title: x.title,
           }
@@ -76,6 +112,108 @@ const getCollectionRequests = async (collID: string) => {
   }
 
   return E.right(reqList)
+}
+
+// Pick the value from the parsed result if it is successful, otherwise, return the default value
+const parseWithDefaultValue = <T>(
+  parseResult: z.SafeParseReturnType<T, T>,
+  defaultValue: T
+): T => (parseResult.success ? parseResult.data : defaultValue)
+
+// Parse the incoming value for the `data` (authorization/headers) field and obtain the value in the expected format
+const parseCollectionData = (
+  data: string | Record<string, unknown> | null
+): CollectionDataProps => {
+  const defaultDataProps: CollectionDataProps = {
+    auth: { authType: "inherit", authActive: true },
+    headers: [],
+    variables: [],
+    description: null,
+    preRequestScript: "",
+    testScript: "",
+  }
+
+  if (!data) {
+    return defaultDataProps
+  }
+
+  let parsedData: CollectionDataProps | Record<string, unknown> | null
+
+  if (typeof data === "string") {
+    try {
+      parsedData = JSON.parse(data)
+    } catch {
+      return defaultDataProps
+    }
+  } else {
+    parsedData = data
+  }
+
+  const auth = parseWithDefaultValue<CollectionDataProps["auth"]>(
+    HoppRESTAuth.safeParse(parsedData?.auth),
+    defaultDataProps.auth
+  )
+
+  const headers = parseWithDefaultValue<CollectionDataProps["headers"]>(
+    HoppRESTHeaders.safeParse(parsedData?.headers),
+    defaultDataProps.headers
+  )
+
+  const variables = parseWithDefaultValue<CollectionDataProps["variables"]>(
+    z.array(CollectionVariable).safeParse(parsedData?.variables),
+    defaultDataProps.variables
+  )
+
+  const description =
+    typeof parsedData?.description === "string"
+      ? parsedData.description
+      : defaultDataProps.description
+
+  const preRequestScript =
+    typeof parsedData?.preRequestScript === "string"
+      ? parsedData.preRequestScript
+      : defaultDataProps.preRequestScript
+
+  const testScript =
+    typeof parsedData?.testScript === "string"
+      ? parsedData.testScript
+      : defaultDataProps.testScript
+
+  return {
+    auth,
+    headers,
+    variables,
+    description,
+    preRequestScript,
+    testScript,
+  }
+}
+
+// Transforms the collection JSON string obtained with workspace level export to `HoppRESTCollection`
+export const teamCollectionJSONToHoppRESTColl = (
+  coll: TeamCollectionJSON
+): HoppCollection => {
+  const {
+    auth,
+    headers,
+    variables,
+    description,
+    preRequestScript,
+    testScript,
+  } = parseCollectionData(coll.data)
+
+  return makeCollection({
+    id: coll.id,
+    name: coll.name,
+    folders: coll.folders?.map(teamCollectionJSONToHoppRESTColl),
+    requests: coll.requests,
+    auth,
+    headers,
+    variables,
+    description,
+    preRequestScript,
+    testScript,
+  })
 }
 
 export const getCompleteCollectionTree = (
@@ -93,10 +231,14 @@ export const getCompleteCollectionTree = (
               collectionID: collID,
             },
           }),
-        TE.map((result) => ({
-          title: result.collection!.title,
-          data: result.collection!.data,
-        }))
+        TE.map((result) =>
+          result.collection
+            ? {
+                title: result.collection!.title,
+                data: result.collection!.data,
+              }
+            : null
+        )
       )
     ),
     TE.bind("children", () =>
@@ -115,8 +257,8 @@ export const getCompleteCollectionTree = (
           id: collID,
           children,
           requests,
-          title: titleAndData.title,
-          data: titleAndData.data,
+          title: titleAndData?.title,
+          data: titleAndData?.data,
         }
     )
   )
@@ -130,14 +272,32 @@ export const teamCollToHoppRESTColl = (
       : {
           auth: { authType: "inherit", authActive: true },
           headers: [],
+          variables: [],
+          description: null,
+          preRequestScript: "",
+          testScript: "",
         }
 
+  const {
+    auth,
+    headers,
+    variables,
+    description,
+    preRequestScript,
+    testScript,
+  } = parseCollectionData(data)
+
   return makeCollection({
+    id: coll.id,
     name: coll.title,
     folders: coll.children?.map(teamCollToHoppRESTColl) ?? [],
     requests: coll.requests?.map((x) => x.request) ?? [],
-    auth: data.auth ?? { authType: "inherit", authActive: true },
-    headers: data.headers ?? [],
+    auth: auth ?? { authType: "inherit", authActive: true },
+    headers: headers ?? [],
+    variables: variables ?? [],
+    description: description ?? null,
+    preRequestScript: preRequestScript ?? "",
+    testScript: testScript ?? "",
   })
 }
 
@@ -146,10 +306,88 @@ export const teamCollToHoppRESTColl = (
  * @param teamID - ID of the team
  * @returns Either of the JSON string of the collection or the error
  */
-export const getTeamCollectionJSON = async (teamID: string) =>
-  await runGQLQuery({
+export const getTeamCollectionJSON = async (teamID: string) => {
+  const data = await runGQLQuery({
     query: ExportAsJsonDocument,
     variables: {
       teamID,
     },
   })
+
+  if (E.isLeft(data)) {
+    return E.left(data.left.error.toString())
+  }
+
+  const collections = JSON.parse(data.right.exportCollectionsToJSON)
+
+  if (!collections.length) {
+    const t = getI18n()
+
+    return E.left(t("error.no_collections_to_export"))
+  }
+
+  const hoppCollections = collections
+    .map(teamCollectionJSONToHoppRESTColl)
+    .map(stripCollectionTreeForStore)
+  return E.right(JSON.stringify(hoppCollections, stripRefIdReplacer, 2))
+}
+
+/**
+ * Fetch a single team collection and return it as a HoppCollection.
+ * @param teamID - ID of the team
+ * @param collectionID - ID of the collection
+ */
+export const getTeamCollectionObject = async (
+  teamID: string,
+  collectionID: string
+): Promise<E.Either<GQLError<string> | string, HoppCollection>> => {
+  const data = await runGQLQuery({
+    query: ExportCollectionToJsonDocument,
+    variables: {
+      teamID,
+      collectionID,
+    },
+  })
+
+  if (E.isLeft(data)) {
+    return E.left(data.left)
+  }
+
+  try {
+    const collection = JSON.parse(data.right.exportCollectionToJSON)
+    if (!collection) {
+      return E.left("Collection not found")
+    }
+    return E.right(teamCollectionJSONToHoppRESTColl(collection))
+  } catch {
+    return E.left("Failed to parse collection data")
+  }
+}
+
+/**
+ * Get the JSON string of a single collection of the specified team
+ * @param teamID - ID of the team
+ * @param collectionID - ID of the collection
+ */
+export const getSingleTeamCollectionJSON = async (
+  teamID: string,
+  collectionID: string
+) => {
+  const result = await getTeamCollectionObject(teamID, collectionID)
+
+  if (E.isLeft(result)) {
+    const errorMsg =
+      typeof result.left === "string"
+        ? result.left
+        : result.left.error.toString()
+    return E.left(errorMsg)
+  }
+
+  return E.right(
+    JSON.stringify(
+      stripCollectionTreeForStore(result.right),
+      stripRefIdReplacer,
+      2
+    )
+  )
+}

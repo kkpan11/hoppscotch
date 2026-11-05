@@ -1,4 +1,9 @@
-import { Environment, HoppCollection, HoppRESTRequest } from "@hoppscotch/data";
+import {
+  Environment,
+  HoppCollection,
+  HoppRESTRequest,
+  RESTReqSchemaVersion,
+} from "@hoppscotch/data";
 import axios, { Method } from "axios";
 import * as A from "fp-ts/Array";
 import * as E from "fp-ts/Either";
@@ -25,9 +30,7 @@ import {
 } from "./display";
 import { getDurationInSeconds, getMetaDataPairs } from "./getters";
 import { preRequestScriptRunner } from "./pre-request";
-import { getTestScriptParams, hasFailedTestCases, testRunner } from "./test";
-
-// !NOTE: The `config.supported` checks are temporary until OAuth2 and Multipart Forms are supported
+import { getTestScriptParams, hasAllTestsPassed, testRunner } from "./test";
 
 /**
  * Processes given variable, which includes checking for secret variables
@@ -39,8 +42,10 @@ const processVariables = (variable: Environment["variables"][number]) => {
   if (variable.secret) {
     return {
       ...variable,
-      value:
-        "value" in variable ? variable.value : process.env[variable.key] || "",
+      currentValue:
+        "currentValue" in variable && variable.currentValue !== ""
+          ? variable.currentValue
+          : process.env[variable.key] || variable.initialValue,
     };
   }
   return variable;
@@ -52,10 +57,11 @@ const processVariables = (variable: Environment["variables"][number]) => {
  * @param envs Global + selected envs used by requests with in collection
  * @returns Processed envs with each variable processed
  */
-const processEnvs = (envs: HoppEnvs) => {
+const processEnvs = (envs: Partial<HoppEnvs>) => {
+  // This can take the shape `{ global: undefined, selected: undefined }` when no environment is supplied
   const processedEnvs = {
-    global: envs.global.map(processVariables),
-    selected: envs.selected.map(processVariables),
+    global: envs.global?.map(processVariables) ?? [],
+    selected: envs.selected?.map(processVariables) ?? [],
   };
 
   return processedEnvs;
@@ -65,47 +71,24 @@ const processEnvs = (envs: HoppEnvs) => {
  * Transforms given request data to request-config used by request-runner to
  * perform HTTP request.
  * @param req Effective request data with parsed ENVs.
- * @returns Request config with data realted to HTTP request.
+ * @returns Request config with data related to HTTP request.
  */
 export const createRequest = (req: EffectiveHoppRESTRequest): RequestConfig => {
   const config: RequestConfig = {
-    supported: true,
     displayUrl: req.effectiveFinalDisplayURL,
   };
+
   const { finalBody, finalEndpoint, finalHeaders, finalParams } = getRequest;
+
   const reqParams = finalParams(req);
   const reqHeaders = finalHeaders(req);
+
   config.url = finalEndpoint(req);
   config.method = req.method as Method;
   config.params = getMetaDataPairs(reqParams);
   config.headers = getMetaDataPairs(reqHeaders);
-  if (req.auth.authActive) {
-    switch (req.auth.authType) {
-      case "oauth-2": {
-        // TODO: OAuth2 Request Parsing
-        // !NOTE: Temporary `config.supported` check
-        config.supported = false;
-      }
-      default: {
-        break;
-      }
-    }
-  }
-  if (req.body.contentType) {
-    config.headers["Content-Type"] = req.body.contentType;
-    switch (req.body.contentType) {
-      case "multipart/form-data": {
-        // TODO: Parse Multipart Form Data
-        // !NOTE: Temporary `config.supported` check
-        config.supported = false;
-        break;
-      }
-      default: {
-        config.data = finalBody(req);
-        break;
-      }
-    }
-  }
+
+  config.data = finalBody(req);
 
   return config;
 };
@@ -128,32 +111,39 @@ export const requestRunner =
       // NOTE: Temporary parsing check for request endpoint.
       requestConfig.url = new URL(requestConfig.url ?? "").toString();
 
-      let status: number;
       const baseResponse = await axios(requestConfig);
       const { config } = baseResponse;
-      // PR-COMMENT: type error
-      const runnerResponse: RequestRunnerResponse = {
-        ...baseResponse,
-        endpoint: getRequest.endpoint(config.url),
-        method: getRequest.method(config.method),
-        body: baseResponse.data,
-        duration: 0,
-      };
-
-      // !NOTE: Temporary `config.supported` check
-      if ((config as RequestConfig).supported === false) {
-        status = 501;
-        runnerResponse.status = status;
-        runnerResponse.statusText = responseErrors[status];
-      }
 
       const end = hrtime(start);
       const duration = getDurationInSeconds(end);
-      runnerResponse.duration = duration;
+      const responseTime = duration * 1000; // Convert seconds to milliseconds
+
+      // Transform axios headers to required format
+      const transformedHeaders: { key: string; value: string }[] = [];
+      if (baseResponse.headers) {
+        for (const [key, value] of Object.entries(baseResponse.headers)) {
+          if (value !== undefined) {
+            transformedHeaders.push({
+              key,
+              value: Array.isArray(value) ? value.join(", ") : String(value),
+            });
+          }
+        }
+      }
+
+      const runnerResponse: RequestRunnerResponse = {
+        endpoint: getRequest.endpoint(config.url),
+        method: getRequest.method(config.method),
+        body: baseResponse.data,
+        responseTime,
+        duration: duration,
+        status: baseResponse.status,
+        statusText: baseResponse.statusText,
+        headers: transformedHeaders,
+      };
 
       return E.right(runnerResponse);
     } catch (e) {
-      let status: number;
       const runnerResponse: RequestRunnerResponse = {
         endpoint: "",
         method: "GET",
@@ -162,21 +152,33 @@ export const requestRunner =
         status: 400,
         headers: [],
         duration: 0,
+        responseTime: 0,
       };
 
       if (axios.isAxiosError(e)) {
-        runnerResponse.endpoint = e.config.url ?? "";
+        runnerResponse.endpoint = e.config?.url ?? "";
 
         if (e.response) {
           const { data, status, statusText, headers } = e.response;
           runnerResponse.body = data;
           runnerResponse.statusText = statusText;
           runnerResponse.status = status;
-          runnerResponse.headers = headers;
-        } else if ((e.config as RequestConfig).supported === false) {
-          status = 501;
-          runnerResponse.status = status;
-          runnerResponse.statusText = responseErrors[status];
+
+          // Transform axios headers to required format
+          const transformedHeaders: { key: string; value: string }[] = [];
+          if (headers) {
+            for (const [key, value] of Object.entries(headers)) {
+              if (value !== undefined) {
+                transformedHeaders.push({
+                  key,
+                  value: Array.isArray(value)
+                    ? value.join(", ")
+                    : String(value),
+                });
+              }
+            }
+          }
+          runnerResponse.headers = transformedHeaders;
         } else if (e.request) {
           return E.left(error({ code: "REQUEST_ERROR", data: E.toError(e) }));
         }
@@ -230,7 +232,16 @@ export const processRequest =
     params: ProcessRequestParams
   ): T.Task<{ envs: HoppEnvs; report: RequestReport }> =>
   async () => {
-    const { envs, path, request, delay } = params;
+    const {
+      envs,
+      path,
+      request,
+      delay,
+      legacySandbox,
+      collectionVariables,
+      inheritedPreRequestScripts = [],
+      inheritedTestScripts = [],
+    } = params;
 
     // Initialising updatedEnvs with given parameter envs, will eventually get updated.
     const result = {
@@ -255,22 +266,37 @@ export const processRequest =
       effectiveFinalParams: [],
       effectiveFinalURL: "",
     };
-    let updatedEnvs = <HoppEnvs>{};
 
     // Fetch values for secret environment variables from system environment
     const processedEnvs = processEnvs(envs);
 
-    // Executing pre-request-script
+    // Default envs to the pre-script state so downstream consumers
+    // (test-runner, effectiveRequest builder) receive a well-shaped
+    // HoppEnvs even if the pre-request script fails.
+    let updatedEnvs: HoppEnvs = processedEnvs;
+
     const preRequestRes = await preRequestScriptRunner(
       request,
-      processedEnvs
+      processedEnvs,
+      legacySandbox ?? false,
+      collectionVariables,
+      inheritedPreRequestScripts
     )();
     if (E.isLeft(preRequestRes)) {
       printPreRequestRunner.fail();
 
       // Updating report for errors & current result
       report.errors.push(preRequestRes.left);
-      report.result = report.result && false;
+
+      // Ensure, the CLI fails with a non-zero exit code if there are any errors
+      report.result = false;
+
+      // REQUEST_ERROR here means the request could not be constructed
+      // (GraphQL subscription / invalid variables) — nothing to send
+      if (preRequestRes.left.code === "REQUEST_ERROR") {
+        result.report = report;
+        return result;
+      }
     } else {
       // Updating effective-request and consuming updated envs after pre-request script execution
       ({ effectiveRequest, updatedEnvs } = preRequestRes.right);
@@ -288,6 +314,7 @@ export const processRequest =
       headers: [],
       status: 400,
       statusText: "",
+      responseTime: 0,
       body: Object(null),
       duration: 0,
     };
@@ -298,7 +325,9 @@ export const processRequest =
     if (E.isLeft(requestRunnerRes)) {
       // Updating report for errors & current result
       report.errors.push(requestRunnerRes.left);
-      report.result = report.result && false;
+
+      // Ensure, the CLI fails with a non-zero exit code if there are any errors
+      report.result = false;
 
       printRequestRunner.fail();
     } else {
@@ -307,11 +336,12 @@ export const processRequest =
       printRequestRunner.success(_requestRunnerRes);
     }
 
-    // Extracting test-script-runner parameters.
     const testScriptParams = getTestScriptParams(
       _requestRunnerRes,
-      request,
-      updatedEnvs
+      effectiveRequest,
+      updatedEnvs,
+      legacySandbox ?? false,
+      inheritedTestScripts
     );
 
     // Executing test-runner.
@@ -321,14 +351,44 @@ export const processRequest =
 
       // Updating report with current errors & result.
       report.errors.push(testRunnerRes.left);
-      report.result = report.result && false;
+
+      // Ensure, the CLI fails with a non-zero exit code if there are any errors
+      report.result = false;
     } else {
       const { envs, testsReport, duration } = testRunnerRes.right;
-      const _hasFailedTestCases = hasFailedTestCases(testsReport);
+      const _allTestsPassed = hasAllTestsPassed(testsReport);
+
+      // Check if any tests have uncaught runtime errors (e.g., ReferenceError, TypeError)
+      // Don't include validation errors (they're reported as individual testcases)
+      const testScriptErrors = testsReport.flatMap((testReport) =>
+        testReport.expectResults
+          .filter(
+            (result) =>
+              result.status === "error" &&
+              /^(ReferenceError|TypeError|SyntaxError|RangeError|URIError|EvalError|AggregateError|InternalError|Error):/.test(
+                result.message
+              )
+          )
+          .map((result) => result.message)
+      );
+
+      // If there are runtime errors, add them to report.errors
+      if (testScriptErrors.length > 0) {
+        const errorMessages = testScriptErrors.join("; ");
+
+        report.errors.push(
+          error({
+            code: "TEST_SCRIPT_ERROR",
+            data: errorMessages,
+          })
+        );
+
+        report.result = false;
+      }
 
       // Updating report with current tests, result and duration.
       report.tests = testsReport;
-      report.result = report.result && _hasFailedTestCases;
+      report.result = report.result && _allTestsPassed;
       report.duration.test = duration;
 
       // Updating resulting envs from test-runner.
@@ -357,7 +417,7 @@ export const preProcessRequest = (
   const { headers: parentHeaders, auth: parentAuth } = collection;
 
   if (!tempRequest.v) {
-    tempRequest.v = "1";
+    tempRequest.v = RESTReqSchemaVersion;
   }
   if (!tempRequest.name) {
     tempRequest.name = "Untitled Request";

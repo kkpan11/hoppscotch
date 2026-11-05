@@ -1,4 +1,9 @@
-:80 :3100 {
+{
+  admin off
+  persist_config off
+}
+
+:{$HOPP_ALTERNATE_PORT:80} :3100 {
 	handle_path /admin* {
 		root * /site/sh-admin-subpath-access
 		file_server

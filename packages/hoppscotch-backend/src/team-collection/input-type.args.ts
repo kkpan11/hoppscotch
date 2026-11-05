@@ -1,18 +1,25 @@
 import { ArgsType, Field, ID } from '@nestjs/graphql';
+import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
 import { PaginationArgs } from 'src/types/input-types.args';
 
 @ArgsType()
 export class GetRootTeamCollectionsArgs extends PaginationArgs {
   @Field(() => ID, { name: 'teamID', description: 'ID of the team' })
+  @IsString()
+  @IsNotEmpty()
   teamID: string;
 }
 
 @ArgsType()
 export class CreateRootTeamCollectionArgs {
   @Field(() => ID, { name: 'teamID', description: 'ID of the team' })
+  @IsString()
+  @IsNotEmpty()
   teamID: string;
 
   @Field({ name: 'title', description: 'Title of the new collection' })
+  @IsString()
+  @IsNotEmpty()
   title: string;
 
   @Field({
@@ -20,6 +27,8 @@ export class CreateRootTeamCollectionArgs {
     description: 'JSON string representing the collection data',
     nullable: true,
   })
+  @IsString()
+  @IsOptional()
   data: string;
 }
 
@@ -29,9 +38,13 @@ export class CreateChildTeamCollectionArgs {
     name: 'collectionID',
     description: 'ID of the parent to the new collection',
   })
+  @IsString()
+  @IsNotEmpty()
   collectionID: string;
 
   @Field({ name: 'childTitle', description: 'Title of the new collection' })
+  @IsString()
+  @IsNotEmpty()
   childTitle: string;
 
   @Field({
@@ -39,6 +52,8 @@ export class CreateChildTeamCollectionArgs {
     description: 'JSON string representing the collection data',
     nullable: true,
   })
+  @IsString()
+  @IsOptional()
   data: string;
 }
 
@@ -47,15 +62,17 @@ export class RenameTeamCollectionArgs {
   @Field(() => ID, {
     name: 'collectionID',
     description: 'ID of the collection',
-    deprecationReason: 'Switch to updateTeamCollection mutation instead',
   })
+  @IsString()
+  @IsNotEmpty()
   collectionID: string;
 
   @Field({
     name: 'newTitle',
     description: 'The updated title of the collection',
-    deprecationReason: 'Switch to updateTeamCollection mutation instead',
   })
+  @IsString()
+  @IsNotEmpty()
   newTitle: string;
 }
 
@@ -66,12 +83,16 @@ export class MoveTeamCollectionArgs {
     description: 'ID of the parent to the new collection',
     nullable: true,
   })
+  @IsString()
+  @IsOptional()
   parentCollectionID: string;
 
   @Field(() => ID, {
     name: 'collectionID',
     description: 'ID of the collection',
   })
+  @IsString()
+  @IsNotEmpty()
   collectionID: string;
 }
 
@@ -81,6 +102,8 @@ export class UpdateTeamCollectionOrderArgs {
     name: 'collectionID',
     description: 'ID of the collection',
   })
+  @IsString()
+  @IsNotEmpty()
   collectionID: string;
 
   @Field(() => ID, {
@@ -89,30 +112,9 @@ export class UpdateTeamCollectionOrderArgs {
       'ID of the collection that comes after the updated collection in its new position',
     nullable: true,
   })
+  @IsString()
+  @IsOptional()
   destCollID: string;
-}
-
-@ArgsType()
-export class ReplaceTeamCollectionArgs {
-  @Field(() => ID, {
-    name: 'teamID',
-    description: 'Id of the team to add to',
-  })
-  teamID: string;
-
-  @Field({
-    name: 'jsonString',
-    description: 'JSON string to replace with',
-  })
-  jsonString: string;
-
-  @Field(() => ID, {
-    name: 'parentCollectionID',
-    description:
-      'ID to the collection to which to import to (null if to import to the root of team)',
-    nullable: true,
-  })
-  parentCollectionID?: string;
 }
 
 @ArgsType()
@@ -121,6 +123,8 @@ export class UpdateTeamCollectionArgs {
     name: 'collectionID',
     description: 'ID of the collection',
   })
+  @IsString()
+  @IsNotEmpty()
   collectionID: string;
 
   @Field({
@@ -128,6 +132,8 @@ export class UpdateTeamCollectionArgs {
     description: 'The updated title of the collection',
     nullable: true,
   })
+  @IsString()
+  @IsOptional()
   newTitle: string;
 
   @Field({
@@ -135,5 +141,7 @@ export class UpdateTeamCollectionArgs {
     description: 'JSON string representing the collection data',
     nullable: true,
   })
+  @IsString()
+  @IsOptional()
   data: string;
 }

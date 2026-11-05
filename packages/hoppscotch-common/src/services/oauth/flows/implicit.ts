@@ -8,21 +8,32 @@ import {
 import { z } from "zod"
 import { getService } from "~/modules/dioc"
 import * as E from "fp-ts/Either"
-import { ImplicitOauthFlowParams } from "@hoppscotch/data"
+import {
+  ImplicitOauthFlowParams as ImplicitOauthFlowParamsData,
+  OAuth2AuthRequestParam,
+} from "@hoppscotch/data"
+import { OAuth2ParamSchema } from "../utils"
 
 const persistenceService = getService(PersistenceService)
 
-const ImplicitOauthFlowParamsSchema = ImplicitOauthFlowParams.pick({
-  authEndpoint: true,
-  clientID: true,
-  scopes: true,
-}).refine((params) => {
-  return (
-    params.authEndpoint.length >= 1 &&
-    params.clientID.length >= 1 &&
-    (params.scopes === undefined || params.scopes.length >= 1)
-  )
+// Use the existing schema from hoppscotch-data
+const ImplicitOauthFlowParamsSchema = ImplicitOauthFlowParamsData.omit({
+  grantType: true,
+  token: true,
 })
+  .extend({
+    // Override optional arrays to be required for the service layer
+    authRequestParams: z.array(OAuth2AuthRequestParam),
+    refreshRequestParams: z.array(OAuth2ParamSchema),
+    tokenType: z.enum(["access_token", "id_token"]).optional(),
+  })
+  .refine((params) => {
+    return (
+      params.authEndpoint.length >= 1 &&
+      params.clientID.length >= 1 &&
+      (params.scopes === undefined || params.scopes.length >= 1)
+    )
+  })
 
 export type ImplicitOauthFlowParams = z.infer<
   typeof ImplicitOauthFlowParamsSchema
@@ -33,24 +44,29 @@ export const getDefaultImplicitOauthFlowParams =
     authEndpoint: "",
     clientID: "",
     scopes: undefined,
+    authRequestParams: [],
+    refreshRequestParams: [],
+    tokenType: "access_token",
   })
 
 const initImplicitOauthFlow = async ({
   clientID,
   scopes,
   authEndpoint,
+  authRequestParams,
+  tokenType,
 }: ImplicitOauthFlowParams) => {
   const state = generateRandomString()
 
   const localOAuthTempConfig =
-    persistenceService.getLocalConfig("oauth_temp_config")
+    await persistenceService.getLocalConfig("oauth_temp_config")
 
   const persistedOAuthConfig: PersistedOAuthConfig = localOAuthTempConfig
     ? { ...JSON.parse(localOAuthTempConfig) }
     : {}
 
   // Persist the necessary information for retrieval while getting redirected back
-  persistenceService.setLocalConfig(
+  await persistenceService.setLocalConfig(
     "oauth_temp_config",
     JSON.stringify(<PersistedOAuthConfig>{
       ...persistedOAuthConfig,
@@ -59,6 +75,8 @@ const initImplicitOauthFlow = async ({
         authEndpoint,
         scopes,
         state,
+        authRequestParams,
+        tokenType,
       },
       grant_type: "IMPLICIT",
     })
@@ -79,6 +97,15 @@ const initImplicitOauthFlow = async ({
 
   if (scopes) url.searchParams.set("scope", scopes)
 
+  // Process additional auth request parameters
+  if (authRequestParams) {
+    authRequestParams
+      .filter((param) => param.active && param.key && param.value)
+      .forEach((param) => {
+        url.searchParams.set(param.key, param.value)
+      })
+  }
+
   // Redirect to the authorization server
   window.location.assign(url.toString())
 
@@ -92,6 +119,7 @@ const handleRedirectForAuthCodeOauthFlow = async (localConfig: string) => {
 
   const accessToken =
     params.get("access_token") || paramsFromHash.get("access_token")
+  const idToken = params.get("id_token") || paramsFromHash.get("id_token")
   const state = params.get("state") || paramsFromHash.get("state")
   const error = params.get("error") || paramsFromHash.get("error")
 
@@ -99,14 +127,11 @@ const handleRedirectForAuthCodeOauthFlow = async (localConfig: string) => {
     return E.left("AUTH_SERVER_RETURNED_ERROR")
   }
 
-  if (!accessToken) {
-    return E.left("AUTH_TOKEN_REQUEST_FAILED")
-  }
-
   const expectedSchema = z.object({
     source: z.optional(z.string()),
     state: z.string(),
     clientID: z.string(),
+    tokenType: z.enum(["access_token", "id_token"]).optional(),
   })
 
   const decodedLocalConfig = expectedSchema.safeParse(
@@ -122,8 +147,22 @@ const handleRedirectForAuthCodeOauthFlow = async (localConfig: string) => {
     return E.left("INVALID_STATE")
   }
 
+  // Get the token type preference from the persisted config
+  const tokenTypePreference =
+    decodedLocalConfig.data.tokenType || "access_token"
+
+  // Return the preferred token type
+  const token =
+    tokenTypePreference === "id_token"
+      ? idToken || accessToken
+      : accessToken || idToken
+
+  if (!token) {
+    return E.left("AUTH_TOKEN_REQUEST_FAILED")
+  }
+
   return E.right({
-    access_token: accessToken,
+    access_token: token,
   })
 }
 

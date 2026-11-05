@@ -1,0 +1,63 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the main window and every bundle origin",
+  "windows": ["*"],
+  "webviews": ["*"],
+  "remote": {
+    "urls": ["app://*", "http://app.:bundle([a-z0-9_-]+)"]
+  },
+  "permissions": [
+    "core:default",
+    "core:window:default",
+    "core:window:allow-start-dragging",
+    "core:event:default",
+    "core:path:default",
+    "core:webview:default",
+    "core:webview:allow-set-webview-zoom",
+    "shell:allow-open",
+    "store:default",
+    "dialog:default",
+    "process:default",
+    "updater:default",
+    "fs:allow-copy-file",
+    "fs:allow-remove",
+    "fs:allow-exists",
+    "fs:allow-read-file",
+    "fs:allow-read-dir",
+    "fs:allow-write-file",
+    "fs:allow-write-text-file",
+    {
+      "identifier": "fs:scope",
+      "allow": [
+        { "path": "$APPCONFIG" },
+        { "path": "$APPCONFIG/**" },
+        { "path": "$APPDATA" },
+        { "path": "$APPDATA/**" }
+      ]
+    },
+    "deep-link:default",
+    "appload:default",
+    "relay:default",
+    "allow-is-portable",
+    "allow-hopp-auth-port",
+    "allow-quit-app",
+    "allow-check-and-backup-on-version-change",
+    "allow-set-desktop-config",
+    "allow-check-for-updates",
+    "allow-download-and-install-update",
+    "allow-restart-application",
+    "allow-cancel-update",
+    "allow-get-download-progress",
+    "allow-is-portable-mode",
+    "allow-get-config-dir",
+    "allow-get-latest-dir",
+    "allow-get-instance-dir",
+    "allow-get-store-dir",
+    "allow-get-backup-dir",
+    "allow-get-logs-dir",
+    "allow-append-log",
+    "allow-read-log",
+    "allow-get-appload-registry"
+  ]
+}
